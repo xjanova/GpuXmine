@@ -5,6 +5,16 @@ namespace GpuxMine.Core.Licensing;
 
 public sealed record DeviceRegistration(bool Ok, string? Message);
 
+/// <summary>The identity a node is given when its owner pairs it from the website.</summary>
+public sealed record NodeCredentials(
+    bool Ok,
+    string? WorkerId,
+    string? Token,
+    string? RelayUrl,
+    string? Label,
+    string? Owner,
+    string? Message);
+
 public sealed record LicenseState(
     bool Valid,
     string? Status,
@@ -70,6 +80,72 @@ public sealed class XmanStudioClient(HttpClient http, string baseUrl, string pro
         catch (Exception ex)
         {
             return new DeviceRegistration(false, ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Exchanges the pairing code from the website for this node's identity.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The one call that makes an installed client usable. Before it existed, a
+    /// worker id and token could only be minted by someone with the relay's
+    /// admin key, so a person who downloaded the installer opened the app,
+    /// read "ยังไม่ได้ลงทะเบียน", and had nothing to click.
+    /// </para>
+    /// <para>
+    /// The website issues the code, not the client: the person logged in there
+    /// has proved who they are, and a freshly installed program has proved
+    /// nothing. The code is short-lived and single-use because it creates a
+    /// worker in that account's name.
+    /// </para>
+    /// </remarks>
+    public async Task<NodeCredentials> ClaimAsync(string pairingCode, string appVersion, CancellationToken ct = default)
+    {
+        try
+        {
+            using HttpResponseMessage response = await http.PostAsJsonAsync(
+                $"{_base}/api/v1/product/{productSlug}/claim",
+                new
+                {
+                    pairing_code = pairingCode,
+                    machine_id = MachineIdentity.MachineId(),
+                    machine_name = MachineIdentity.MachineName(),
+                    os_version = MachineIdentity.OsVersion(),
+                    app_version = appVersion,
+                    hardware_hash = MachineIdentity.HardwareHash(),
+                },
+                ct);
+
+            var body = await ReadAsync<ClaimEnvelope>(response, ct);
+
+            if (body is null)
+            {
+                return new NodeCredentials(false, null, null, null, null, null,
+                    $"เซิร์ฟเวอร์ตอบกลับไม่ถูกต้อง (HTTP {(int)response.StatusCode})");
+            }
+
+            if (!response.IsSuccessStatusCode || !body.Success || body.Data?.Token is null)
+            {
+                // The server's message is the useful one — it distinguishes a
+                // mistyped code from an expired one from a relay that is down.
+                return new NodeCredentials(false, null, null, null, null, null,
+                    body.Message ?? "ลงทะเบียนไม่สำเร็จ");
+            }
+
+            return new NodeCredentials(
+                true,
+                body.Data.WorkerId,
+                body.Data.Token,
+                body.Data.RelayUrl,
+                body.Data.Label,
+                body.Data.Owner,
+                body.Message);
+        }
+        catch (Exception ex)
+        {
+            return new NodeCredentials(false, null, null, null, null, null,
+                $"ติดต่อ XMAN Studio ไม่ได้: {ex.Message}");
         }
     }
 
@@ -168,6 +244,22 @@ public sealed class XmanStudioClient(HttpClient http, string baseUrl, string pro
     // Shapes verified against ProductLicenseController::validate and
     // VersionController::check in the xmanstudio source, 2026-09-18. A guess
     // here fails silently — every licensed node would report the free tier.
+
+    private sealed class ClaimEnvelope
+    {
+        [JsonPropertyName("success")] public bool Success { get; set; }
+        [JsonPropertyName("message")] public string? Message { get; set; }
+        [JsonPropertyName("data")] public ClaimData? Data { get; set; }
+
+        internal sealed class ClaimData
+        {
+            [JsonPropertyName("worker_id")] public string? WorkerId { get; set; }
+            [JsonPropertyName("token")] public string? Token { get; set; }
+            [JsonPropertyName("relay_url")] public string? RelayUrl { get; set; }
+            [JsonPropertyName("label")] public string? Label { get; set; }
+            [JsonPropertyName("owner")] public string? Owner { get; set; }
+        }
+    }
 
     private sealed class LicenseEnvelope
     {

@@ -1,7 +1,7 @@
 using GpuxMine.Core;
+using GpuxMine.Core.Licensing;
 using GpuxMine.Core.Updates;
 using GpuxMine.Node;
-using Microsoft.Extensions.Configuration;
 using Velopack;
 
 // First line of the program, by Velopack's rule: its install, update and
@@ -21,18 +21,7 @@ catch (IOException)
     // No console attached (a service, or output redirected) — nothing to set.
 }
 
-IConfigurationRoot configuration = new ConfigurationBuilder()
-    .SetBasePath(AppContext.BaseDirectory)
-    .AddJsonFile("agent.json", optional: true, reloadOnChange: false)
-    // The legacy path first, so the one in the current data folder wins if both
-    // exist. The old one lived inside what became the install directory.
-    .AddJsonFile(Path.Combine(NodeOptions.LegacyDataDirectory(), "agent.json"), optional: true, reloadOnChange: false)
-    .AddJsonFile(Path.Combine(NodeOptions.DefaultDataDirectory(), "agent.json"), optional: true, reloadOnChange: false)
-    .AddEnvironmentVariables("GPUXMINE_")
-    .AddCommandLine(args)
-    .Build();
-
-var options = configuration.Get<NodeOptions>() ?? new NodeOptions();
+var options = NodeConfiguration.Build(args);
 
 // `--identity`: print what XMAN Studio will see as this machine and exit. The
 // first thing support asks for when a device looks duplicated or missing.
@@ -56,6 +45,42 @@ if (args.Any(a => a.Equals("--identity", StringComparison.OrdinalIgnoreCase)))
 // exactly what made the BrainX client loop forever trying to update itself.
 SelfUpdater.Prepare(options.DataDirectory);
 
+// `--pair CODE`: the headless half of the pairing flow the window has on its
+// Settings screen. A rig with no desktop session still has an owner with a
+// browser, and without this that owner would have to hand-write agent.json
+// from credentials only the relay's admin key can mint.
+if (args.FirstOrDefault(a => a.Equals("--pair", StringComparison.OrdinalIgnoreCase)) is not null)
+{
+    int at = Array.FindIndex(args, a => a.Equals("--pair", StringComparison.OrdinalIgnoreCase));
+    string? code = at >= 0 && at + 1 < args.Length ? args[at + 1] : null;
+
+    if (string.IsNullOrWhiteSpace(code))
+    {
+        Console.WriteLine("ใช้: gpuxmine-agent --pair <รหัสจับคู่>   (ขอรหัสได้ที่หน้า GPUxMINE บน XMAN Studio)");
+        return 2;
+    }
+
+    Console.WriteLine($"กำลังลงทะเบียนเครื่องกับ {options.XmanStudioUrl}");
+
+    using var pairingHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+    var studio = new XmanStudioClient(pairingHttp, options.XmanStudioUrl);
+    NodeCredentials credentials = await studio.ClaimAsync(code, SelfUpdater.CurrentVersion);
+
+    if (!credentials.Ok || credentials.WorkerId is null || credentials.Token is null)
+    {
+        Console.WriteLine($"ลงทะเบียนไม่สำเร็จ: {credentials.Message}");
+        return 1;
+    }
+
+    NodeIdentityFile.Save(options.DataDirectory, credentials.WorkerId, credentials.Token, credentials.RelayUrl);
+
+    Console.WriteLine($"ลงทะเบียนเรียบร้อย — worker {credentials.WorkerId}"
+                      + (credentials.Owner is null ? "" : $" ของ {credentials.Owner}"));
+    Console.WriteLine($"บันทึกไว้ที่ {NodeIdentityFile.PathIn(options.DataDirectory)}");
+    Console.WriteLine("เปิดโปรแกรมอีกครั้งโดยไม่ต้องใส่ --pair เพื่อเริ่มรับงาน");
+    return 0;
+}
+
 if (!options.Validate(out string error))
 {
     Console.Error.WriteLine($"""
@@ -72,6 +97,7 @@ if (!options.Validate(out string error))
           --AutoUpdate      false to pin this build
           --XmanStudioUrl   default https://xman4289.com
           --identity        print this machine's identity and exit
+          --pair <รหัส>     ลงทะเบียนเครื่องด้วยรหัสจับคู่จากหน้า GPUxMINE บน XMAN Studio
 
         Settings are also read from agent.json beside the executable, from
         %APPDATA%\GPUxMINE\agent.json, and from GPUXMINE_* environment variables.

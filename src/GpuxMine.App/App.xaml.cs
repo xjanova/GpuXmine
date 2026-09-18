@@ -5,7 +5,6 @@ using GpuxMine.App.ViewModels;
 using GpuxMine.Core.Updates;
 using GpuxMine.Hardware;
 using GpuxMine.Node;
-using Microsoft.Extensions.Configuration;
 using Velopack;
 
 namespace GpuxMine.App;
@@ -27,19 +26,7 @@ public partial class App : Application
 
         base.OnStartup(e);
 
-        IConfigurationRoot configuration = new ConfigurationBuilder()
-            .SetBasePath(AppContext.BaseDirectory)
-            .AddJsonFile("agent.json", optional: true, reloadOnChange: false)
-            // The legacy path first, so the one in the current data folder wins
-            // if both exist. Neither is required: the Settings screen writes the
-            // new one, and the old one is on its way out.
-            .AddJsonFile(Path.Combine(NodeOptions.LegacyDataDirectory(), "agent.json"), optional: true, reloadOnChange: false)
-            .AddJsonFile(Path.Combine(NodeOptions.DefaultDataDirectory(), "agent.json"), optional: true, reloadOnChange: false)
-            .AddEnvironmentVariables("GPUXMINE_")
-            .AddCommandLine(e.Args)
-            .Build();
-
-        var options = configuration.Get<NodeOptions>() ?? new NodeOptions();
+        var options = NodeConfiguration.Build(e.Args);
 
         // Our working directory out of the install tree, so an update can
         // rename it later.

@@ -75,6 +75,7 @@ public sealed class MainViewModel : ObservableObject
         ExportLog = RelayCommand.Of(ExportLogToFile);
         RunDiagnostics = RelayCommand.Of(() => _ = RunDiagnosticsAsync());
         RunBenchmark = RelayCommand.Of(() => _ = RunBenchmarkAsync());
+        PairNode = RelayCommand.Of(() => _ = PairNodeAsync());
         OpenUrl = new RelayCommand(p => OpenInBrowser((string)p!));
         Navigate = new RelayCommand(p => CurrentScreen = (string)p!);
         CopyText = new RelayCommand(p => { try { Clipboard.SetText((string)p!); } catch { /* clipboard busy */ } });
@@ -150,7 +151,9 @@ public sealed class MainViewModel : ObservableObject
     public string RelayHostText => Uri.TryCreate(_host.Options.RelayUrl, UriKind.Absolute, out var u) ? u.Host : "—";
     public string MachineIdShort => MachineIdentity.MachineId()[..12] + "…";
     public bool IsConfigured => _host.Options.Validate(out _);
-    public string ConfigureHint => IsConfigured ? "" : "ยังไม่ได้ตั้ง WorkerId/Token — ดูที่หน้า Settings";
+    public string ConfigureHint => IsConfigured
+        ? ""
+        : "เครื่องนี้ยังไม่ได้ลงทะเบียน — ขอรหัสจับคู่จากหน้าเครื่องของฉันบนเว็บ แล้วกรอกด้านล่าง";
 
     private void Pull()
     {
@@ -499,6 +502,86 @@ public sealed class MainViewModel : ObservableObject
         {
             return $"{name,-12} FAIL — {ex.Message}";
         }
+    }
+
+    // ------------------------------------------------------------ pairing
+
+    /// <summary>
+    /// The screen that turns a fresh install into a node that can earn.
+    /// </summary>
+    /// <remarks>
+    /// Until this existed, Settings showed "ยังไม่ได้ลงทะเบียน" and offered
+    /// nothing to do about it: worker credentials could only be minted by
+    /// someone holding the relay's admin key. Anyone who downloaded the
+    /// installer reached a dead end on the first screen.
+    /// </remarks>
+    public RelayCommand PairNode { get; }
+
+    private string _pairingCode = "";
+    public string PairingCode
+    {
+        get => _pairingCode;
+        set => Set(ref _pairingCode, value);
+    }
+
+    public bool Pairing { get; private set; }
+    public string? PairingStatus { get; private set; }
+
+    /// <summary>Where the owner gets the code — linked, because nobody should have to hunt for it.</summary>
+    public string NodesUrl => StudioUrl + "/gpuxmine";
+
+    private async Task PairNodeAsync()
+    {
+        if (Pairing) return;
+
+        Pairing = true;
+        PairingStatus = "กำลังลงทะเบียน…";
+        Raise(nameof(Pairing)); Raise(nameof(PairingStatus));
+
+        try
+        {
+            var (ok, message) = await _host.PairAsync(PairingCode);
+            PairingStatus = message;
+
+            if (ok)
+            {
+                PairingCode = "";
+                PairingStatus = message + " — กำลังเริ่มโปรแกรมใหม่เพื่อใช้ค่าที่ลงทะเบียน";
+                Raise(nameof(PairingStatus));
+
+                // The identity is read at startup, and the relay connection is
+                // built from it. Restarting is both the simplest way to apply it
+                // and the only one that cannot leave a half-configured node
+                // holding a job.
+                await Task.Delay(1500);
+                Restart();
+            }
+        }
+        catch (Exception ex)
+        {
+            PairingStatus = $"ลงทะเบียนไม่สำเร็จ: {ex.Message}";
+        }
+        finally
+        {
+            Pairing = false;
+            Raise(nameof(Pairing)); Raise(nameof(PairingStatus)); Raise(nameof(IsConfigured)); Raise(nameof(ConfigureHint));
+        }
+    }
+
+    private static void Restart()
+    {
+        try
+        {
+            string? exe = Environment.ProcessPath;
+            if (exe is not null) Process.Start(new ProcessStartInfo(exe) { UseShellExecute = true });
+        }
+        catch
+        {
+            // Could not relaunch — the owner opens it again themselves, and the
+            // identity file is already written, so it comes back paired either way.
+        }
+
+        Application.Current.Shutdown();
     }
 
     // ---------------------------------------------------- machine assessment

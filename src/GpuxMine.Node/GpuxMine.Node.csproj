@@ -11,6 +11,15 @@
          rather than suppressed: this library is parsed on every node in the
          fleet, on machines we do not administer. -->
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.5" />
+    <!-- Reading the node's settings moved here so the window and the headless
+         agent cannot disagree about where agent.json lives — they had already
+         drifted once, and the identity file is the one thing both must read
+         identically. -->
+    <PackageReference Include="Microsoft.Extensions.Configuration" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.CommandLine" Version="10.0.0" />
   </ItemGroup>
   <ItemGroup>
     <!-- Everything a node does, with no UI and no Windows dependency: the

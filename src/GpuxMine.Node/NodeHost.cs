@@ -266,6 +266,52 @@ public sealed class NodeHost : IAsyncDisposable
         };
     }
 
+    // ------------------------------------------------------------- pairing
+
+    /// <summary>
+    /// Exchanges a pairing code from the website for this machine's identity,
+    /// and writes it where an update cannot lose it.
+    /// </summary>
+    /// <remarks>
+    /// The credentials are not applied to the running process: the relay
+    /// connection is built from <see cref="Options"/> at START, and rebuilding
+    /// the world underneath a node that might be mid-render is not worth the
+    /// complexity. The caller restarts, and comes back paired.
+    /// </remarks>
+    public async Task<(bool Ok, string Message)> PairAsync(string pairingCode, CancellationToken ct = default)
+    {
+        string code = pairingCode.Trim();
+        if (code.Length < 8)
+            return (false, "รหัสจับคู่ต้องมี 8 ตัวอักษร");
+
+        Log.Info("[net] กำลังลงทะเบียนเครื่องกับ XMAN Studio");
+
+        NodeCredentials credentials = await _studio.ClaimAsync(code, SelfUpdater.CurrentVersion, ct);
+
+        if (!credentials.Ok || credentials.WorkerId is null || credentials.Token is null)
+        {
+            Log.Warn($"[net] ลงทะเบียนไม่สำเร็จ: {credentials.Message}");
+            return (false, credentials.Message ?? "ลงทะเบียนไม่สำเร็จ");
+        }
+
+        try
+        {
+            NodeIdentityFile.Save(Options.DataDirectory, credentials.WorkerId, credentials.Token, credentials.RelayUrl);
+        }
+        catch (Exception ex)
+        {
+            // The pairing code has been spent by now, so this is worth saying
+            // loudly: the owner has to ask for a new one.
+            Log.Warn($"[net] เขียนไฟล์ตั้งค่าไม่ได้: {ex.Message}");
+            return (false, $"ลงทะเบียนสำเร็จแต่บันทึกลงเครื่องไม่ได้: {ex.Message} — กรุณาขอรหัสใหม่");
+        }
+
+        Log.Info($"[net] ลงทะเบียนเครื่องสำเร็จ — worker {credentials.WorkerId}"
+                 + (credentials.Owner is null ? "" : $" ของ {credentials.Owner}"));
+
+        return (true, credentials.Message ?? "ลงทะเบียนเรียบร้อย");
+    }
+
     // ------------------------------------------------------------- assessment
 
     /// <summary>The report the dispatcher may act on, or why there is none.</summary>
