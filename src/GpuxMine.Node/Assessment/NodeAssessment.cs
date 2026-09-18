@@ -49,8 +49,12 @@ public sealed class NodeAssessment
     /// overhead on a 1.0 s measurement and could not tell two cards apart), and
     /// the deadline model replaced an abstract speed factor. A version 1 report
     /// is not comparable with a version 2 one, so it is re-measured.
+    ///
+    /// 3: audio was missing entirely. Three of the five models the platform
+    /// actually dispatches are music, and no node could ever be matched to one
+    /// because none of them said they could do it.
     /// </remarks>
-    public const int SchemaVersion = 2;
+    public const int SchemaVersion = 3;
 
     [JsonPropertyName("schemaVersion")] public int Version { get; set; } = SchemaVersion;
     [JsonPropertyName("agentVersion")] public string AgentVersion { get; set; } = "";

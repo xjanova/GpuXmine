@@ -618,6 +618,7 @@ public sealed class MainViewModel : ObservableObject
             "image" => "สร้างภาพ",
             "video" => "สร้างวิดีโอ",
             "upscale" => "ขยายภาพ",
+            "audio" => "สร้างเพลง",
             "embed" => "ประมวลผลข้อความ",
             _ => c.Kind,
         };

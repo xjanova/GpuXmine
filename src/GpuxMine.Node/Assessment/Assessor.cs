@@ -108,6 +108,13 @@ public sealed class Assessor(NodeOptions options, ILoggerish log, Storage.NodeSt
     private static readonly (string Kind, int MinVramMb, double BaselineSeconds, double DeadlineSeconds, string Needs, bool WeightsSpill)[] Kinds =
     [
         ("upscale", 2_048, 2, 60, "upscale-model", false),
+        // เพลง — หมวดที่ใหญ่ที่สุดในแคตตาล็อกจริง (3 จาก 5 โมเดล) และเป็นหมวด
+        // ที่การ์ดบ้านมีโอกาสที่สุด: ACE-Step โหลดไฟล์รวม 10 GB ก็จริง แต่ชิ้น
+        // ใหญ่สุดที่ต้องอยู่ใน VRAM พร้อมกันคือ 4.79 GB — text encoder ทำงาน
+        // ก่อนแล้วถูก offload ไม่ได้อยู่พร้อมกันทั้งหมด
+        //
+        // คนรอเพลงได้นานกว่ารอภาพ แต่ไม่นานเท่ารอวิดีโอ
+        ("audio", 6_144, 30, 600, "diffusion-model", false),
         // An SDXL-class checkpoint is 6-7 GB, which is what spills on the cards
         // most of this network will be built from.
         ("image", 6_144, 12, 120, "checkpoint", true),
