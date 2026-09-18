@@ -39,10 +39,36 @@ public sealed class NodeOptions
     public int UpdateCheckHours { get; init; } = 6;
 
     /// <summary>
-    /// ที่เก็บ token, ตัวนับการอัปเดต และ log — ต้องอยู่นอกโฟลเดอร์ติดตั้งเสมอ
-    /// ไม่งั้นมันจะกลายเป็นตัวที่ถือ <c>current</c> ไว้จนอัปเดตไม่ได้
+    /// ที่เก็บ token, ตัวนับการอัปเดต, ledger และ log — ต้องอยู่นอกโฟลเดอร์ติดตั้งเสมอ
     /// </summary>
-    public string DataDirectory { get; init; } =
+    public string DataDirectory { get; init; } = DefaultDataDirectory();
+
+    /// <summary>
+    /// Roaming AppData, and deliberately not Local.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This used to be <c>%LocalAppData%\GpuxMine</c>, which is the exact
+    /// directory Velopack installs into. Measured, not theorised: installing
+    /// the real 0.1.0 package logged <i>"Renaming existing directory to
+    /// GpuxMine.idNriBMGdSl27jIW to allow rollback"</i> and then
+    /// <i>"Preparing and cleaning installation directory"</i> — and the node's
+    /// database, with its settings, its activity log and every job it had ever
+    /// done, was gone.
+    /// </para>
+    /// <para>
+    /// It was also the thing that defeated the guard it was supposed to help:
+    /// <see cref="GpuxMine.Core.Updates.SelfUpdater.Prepare"/> moves the
+    /// process out of the install tree so an update can rename
+    /// <c>current</c>, and it was moving it to another folder inside that same
+    /// tree.
+    /// </para>
+    /// </remarks>
+    public static string DefaultDataDirectory() =>
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "GPUxMINE");
+
+    /// <summary>Where the data used to live. Read once, to rescue it, then never again.</summary>
+    public static string LegacyDataDirectory() =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GpuxMine");
 
     public bool Validate(out string error)

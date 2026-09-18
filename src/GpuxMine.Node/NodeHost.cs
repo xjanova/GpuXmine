@@ -79,6 +79,11 @@ public sealed class NodeHost : IAsyncDisposable
         ILoggerish? alsoLogTo = null)
     {
         Options = options;
+
+        // Before the database is opened: on a node that predates the move, it
+        // is still sitting in the folder the installer cleans.
+        Storage.DataRescue.FromLegacyLocation(options.DataDirectory, alsoLogTo);
+
         Store = new Storage.NodeStore(Path.Combine(options.DataDirectory, "node.db"));
         NodeSettings.MigrateLegacyFile(options.DataDirectory, Store);
         Settings = NodeSettings.Load(Store);

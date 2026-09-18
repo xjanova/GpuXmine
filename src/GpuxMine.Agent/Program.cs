@@ -24,8 +24,10 @@ catch (IOException)
 IConfigurationRoot configuration = new ConfigurationBuilder()
     .SetBasePath(AppContext.BaseDirectory)
     .AddJsonFile("agent.json", optional: true, reloadOnChange: false)
-    .AddJsonFile(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GpuxMine", "agent.json"),
-        optional: true, reloadOnChange: false)
+    // The legacy path first, so the one in the current data folder wins if both
+    // exist. The old one lived inside what became the install directory.
+    .AddJsonFile(Path.Combine(NodeOptions.LegacyDataDirectory(), "agent.json"), optional: true, reloadOnChange: false)
+    .AddJsonFile(Path.Combine(NodeOptions.DefaultDataDirectory(), "agent.json"), optional: true, reloadOnChange: false)
     .AddEnvironmentVariables("GPUXMINE_")
     .AddCommandLine(args)
     .Build();
@@ -72,7 +74,7 @@ if (!options.Validate(out string error))
           --identity        print this machine's identity and exit
 
         Settings are also read from agent.json beside the executable, from
-        %LOCALAPPDATA%\GpuxMine\agent.json, and from GPUXMINE_* environment variables.
+        %APPDATA%\GPUxMINE\agent.json, and from GPUXMINE_* environment variables.
         """);
     return 2;
 }

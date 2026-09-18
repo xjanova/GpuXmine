@@ -30,8 +30,11 @@ public partial class App : Application
         IConfigurationRoot configuration = new ConfigurationBuilder()
             .SetBasePath(AppContext.BaseDirectory)
             .AddJsonFile("agent.json", optional: true, reloadOnChange: false)
-            .AddJsonFile(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GpuxMine", "agent.json"),
-                optional: true, reloadOnChange: false)
+            // The legacy path first, so the one in the current data folder wins
+            // if both exist. Neither is required: the Settings screen writes the
+            // new one, and the old one is on its way out.
+            .AddJsonFile(Path.Combine(NodeOptions.LegacyDataDirectory(), "agent.json"), optional: true, reloadOnChange: false)
+            .AddJsonFile(Path.Combine(NodeOptions.DefaultDataDirectory(), "agent.json"), optional: true, reloadOnChange: false)
             .AddEnvironmentVariables("GPUXMINE_")
             .AddCommandLine(e.Args)
             .Build();
