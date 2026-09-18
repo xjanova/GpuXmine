@@ -31,6 +31,7 @@
     <ProjectReference Include="..\GpuxMine.Hardware\GpuxMine.Hardware.csproj" />
   </ItemGroup>
   <ItemGroup>
+    <PackageReference Include="Velopack" Version="1.1.1" />
     <PackageReference Include="Microsoft.Extensions.Configuration" Version="10.0.0" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="10.0.0" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.0" />

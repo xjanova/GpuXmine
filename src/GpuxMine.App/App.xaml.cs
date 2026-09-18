@@ -6,6 +6,7 @@ using GpuxMine.Core.Updates;
 using GpuxMine.Hardware;
 using GpuxMine.Node;
 using Microsoft.Extensions.Configuration;
+using Velopack;
 
 namespace GpuxMine.App;
 
@@ -17,6 +18,13 @@ public partial class App : Application
 
     protected override void OnStartup(StartupEventArgs e)
     {
+        // First, before configuration and before any window. Velopack delivers
+        // its install, update and uninstall hooks by re-running this executable
+        // with special arguments, and this call is what handles them. It has to
+        // be in the entry assembly: the packer scans for it here and refuses to
+        // build a release if it only finds it in a referenced library.
+        VelopackApp.Build().Run();
+
         base.OnStartup(e);
 
         IConfigurationRoot configuration = new ConfigurationBuilder()
@@ -30,8 +38,8 @@ public partial class App : Application
 
         var options = configuration.Get<NodeOptions>() ?? new NodeOptions();
 
-        // Before any window: Velopack's hooks, and our working directory out
-        // of the install tree so an update can rename it later.
+        // Our working directory out of the install tree, so an update can
+        // rename it later.
         SelfUpdater.Prepare(options.DataDirectory);
 
         // The window opens even when the node is not configured yet: the

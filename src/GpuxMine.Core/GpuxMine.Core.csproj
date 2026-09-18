@@ -6,7 +6,7 @@
     <!-- Binary self-update. Same mechanism the BrainX client uses, so the
          failure modes are already documented in the brain rather than waiting
          to be discovered here. -->
-    <PackageReference Include="Velopack" Version="0.0.1298" />
+    <PackageReference Include="Velopack" Version="1.1.1" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\GpuxMine.Protocol\GpuxMine.Protocol.csproj" />

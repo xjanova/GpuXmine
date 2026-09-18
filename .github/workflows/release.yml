@@ -26,7 +26,7 @@ env:
   # Must match the Velopack package reference in GpuxMine.Core.csproj. A vpk
   # that is newer than the library writes a feed the installed client cannot
   # read, and the only symptom is a fleet that quietly stops updating.
-  VPK_VERSION: '0.0.1298'
+  VPK_VERSION: '1.1.1'
 
 jobs:
   release:

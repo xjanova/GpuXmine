@@ -2,6 +2,12 @@ using GpuxMine.Core;
 using GpuxMine.Core.Updates;
 using GpuxMine.Node;
 using Microsoft.Extensions.Configuration;
+using Velopack;
+
+// First line of the program, by Velopack's rule: its install, update and
+// uninstall hooks are delivered by re-running this executable with special
+// arguments, and they must be handled before any other work starts.
+VelopackApp.Build().Run();
 
 // Windows consoles still default to a legacy code page, which turns every Thai
 // character and every em-dash in this program's output into mojibake. The whole

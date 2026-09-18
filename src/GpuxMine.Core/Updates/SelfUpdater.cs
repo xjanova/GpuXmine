@@ -70,15 +70,22 @@ public sealed class SelfUpdater
         Assembly.GetEntryAssembly()?.GetName().Version?.ToString(3) ?? "0.0.0";
 
     /// <summary>
-    /// Must run before anything else in <c>Main</c>: Velopack's install, update
-    /// and uninstall hooks are delivered by re-running this executable with
-    /// special arguments, and they have to be handled before any other work
-    /// starts. Also moves the process out of the install directory.
+    /// Moves the process out of the install directory, so an update can rename
+    /// it later.
     /// </summary>
+    /// <remarks>
+    /// <b>Call <c>VelopackApp.Build().Run()</c> first, in <c>Main</c> itself.</b>
+    /// It used to be called from here, which read better and did not work: the
+    /// packer verifies the call is present in the <i>entry assembly</i> and
+    /// refuses to build a package when it only finds it in a referenced
+    /// library — "Unable to verify VelopackApp is called", on a client whose
+    /// hooks would in fact have run correctly. It also belongs in Main on its
+    /// own merits: the install, update and uninstall hooks are delivered by
+    /// re-running the executable with special arguments, and handling them is
+    /// the first thing the program does, before any configuration is read.
+    /// </remarks>
     public static void Prepare(string workingDirectory)
     {
-        VelopackApp.Build().Run();
-
         try
         {
             Directory.CreateDirectory(workingDirectory);
