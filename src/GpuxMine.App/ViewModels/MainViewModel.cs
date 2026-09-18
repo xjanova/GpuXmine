@@ -76,6 +76,7 @@ public sealed class MainViewModel : ObservableObject
         RunDiagnostics = RelayCommand.Of(() => _ = RunDiagnosticsAsync());
         RunBenchmark = RelayCommand.Of(() => _ = RunBenchmarkAsync());
         PairNode = RelayCommand.Of(() => _ = PairNodeAsync());
+        ChangePairing = RelayCommand.Of(BeginRepair);
         OpenUrl = new RelayCommand(p => OpenInBrowser((string)p!));
         Navigate = new RelayCommand(p => CurrentScreen = (string)p!);
         CopyText = new RelayCommand(p => { try { Clipboard.SetText((string)p!); } catch { /* clipboard busy */ } });
@@ -530,6 +531,47 @@ public sealed class MainViewModel : ObservableObject
     /// <summary>Where the owner gets the code — linked, because nobody should have to hunt for it.</summary>
     public string NodesUrl => StudioUrl + "/gpuxmine";
 
+    /// <summary>This machine has an identity: it is registered and the pool knows it.</summary>
+    public bool IsPaired => !string.IsNullOrWhiteSpace(_host.Options.WorkerId);
+
+    /// <summary>
+    /// The pairing form is shown to a machine that needs it, not to one that
+    /// has already been registered.
+    /// </summary>
+    /// <remarks>
+    /// Settings used to show "ลงทะเบียนเครื่องกับ XMAN STUDIO", the
+    /// instructions for fetching a code and an empty code box, in exactly the
+    /// same way whether the machine had been registered or not. An owner whose
+    /// node had been earning for a week still opened Settings and was asked to
+    /// register it — the one screen that should have told them the opposite.
+    /// </remarks>
+    public bool ShowPairingForm => !IsPaired || _repairing;
+
+    /// <summary>What a registered machine is told instead of the form.</summary>
+    public string PairedSummary => IsPaired
+        ? $"เครื่องนี้ลงทะเบียนกับ XMAN Studio แล้ว · รหัสเครื่อง {_host.Options.WorkerId}"
+        : "";
+
+    private bool _repairing;
+
+    /// <summary>
+    /// Registering again, over the top of an existing identity.
+    /// </summary>
+    /// <remarks>
+    /// A real need — moving a machine to another account, or re-pairing after
+    /// the owner removed it from the website — and a rare one. It is offered
+    /// behind a button rather than left open, so the ordinary case is a screen
+    /// that says the machine is registered and asks nothing of anybody.
+    /// </remarks>
+    public RelayCommand ChangePairing { get; }
+
+    private void BeginRepair()
+    {
+        _repairing = true;
+        PairingStatus = null;
+        Raise(nameof(ShowPairingForm)); Raise(nameof(PairingStatus));
+    }
+
     private async Task PairNodeAsync()
     {
         if (Pairing) return;
@@ -565,6 +607,7 @@ public sealed class MainViewModel : ObservableObject
         {
             Pairing = false;
             Raise(nameof(Pairing)); Raise(nameof(PairingStatus)); Raise(nameof(IsConfigured)); Raise(nameof(ConfigureHint));
+            Raise(nameof(IsPaired)); Raise(nameof(ShowPairingForm)); Raise(nameof(PairedSummary)); Raise(nameof(WorkerIdText));
         }
     }
 
