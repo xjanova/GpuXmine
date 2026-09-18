@@ -1,0 +1,113 @@
+name: build-and-release
+
+# Tag a commit `v1.2.3` and everything downstream follows on its own:
+#   GitHub Release  →  Velopack feed  →  installed agents update themselves
+#                   →  XMAN Studio's product sync picks the release up within
+#                      10 minutes and the website serves the new download.
+#
+# The website is NOT in the update path for existing installs — Velopack reads
+# this release directly. XMAN Studio tracks the same release so that first-time
+# downloads, the version shown on the product page and the licence/device
+# registry all agree with what the fleet is actually running.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build (no leading v)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Resolve version
+        id: version
+        shell: pwsh
+        run: |
+          $version = if ('${{ github.event_name }}' -eq 'workflow_dispatch') {
+            '${{ github.event.inputs.version }}'
+          } else {
+            '${{ github.ref_name }}' -replace '^v', ''
+          }
+          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+            # Velopack and PHP's version_compare both need a plain three-part
+            # version. Catching it here beats shipping a release the fleet
+            # cannot compare against what it is running.
+            throw "Version '$version' must be MAJOR.MINOR.PATCH"
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          Write-Host "building $version"
+
+      - name: Build and test
+        shell: pwsh
+        run: |
+          dotnet build -c Release -p:Version=${{ steps.version.outputs.version }} --nologo
+          dotnet test -c Release --no-build --nologo
+
+      - name: Publish agent
+        shell: pwsh
+        run: |
+          dotnet publish src/GpuxMine.Agent/GpuxMine.Agent.csproj `
+            -c Release -r win-x64 --self-contained true `
+            -p:Version=${{ steps.version.outputs.version }} `
+            -p:PublishSingleFile=false `
+            -o publish/agent
+
+      # Linux rigs are a large slice of the supply (mining boxes idle since the
+      # merge), and the agent is headless by design — no UI project is involved.
+      - name: Publish agent (linux-x64)
+        shell: pwsh
+        run: |
+          dotnet publish src/GpuxMine.Agent/GpuxMine.Agent.csproj `
+            -c Release -r linux-x64 --self-contained true `
+            -p:Version=${{ steps.version.outputs.version }} `
+            -o publish/agent-linux
+          Compress-Archive -Path publish/agent-linux/* -DestinationPath gpuxmine-agent-linux-x64.zip
+
+      - name: Publish relay
+        shell: pwsh
+        run: |
+          dotnet publish src/GpuxMine.Relay/GpuxMine.Relay.csproj `
+            -c Release -r linux-x64 --self-contained true `
+            -p:Version=${{ steps.version.outputs.version }} `
+            -o publish/relay
+          Compress-Archive -Path publish/relay/* -DestinationPath gpuxmine-relay-linux-x64.zip
+
+      - name: Pack with Velopack
+        shell: pwsh
+        run: |
+          dotnet tool install -g vpk
+          vpk pack `
+            --packId GpuxMine `
+            --packVersion ${{ steps.version.outputs.version }} `
+            --packDir publish/agent `
+            --mainExe gpuxmine-agent.exe `
+            --packTitle "GPUxMINE Worker" `
+            --packAuthors "XMAN Studio"
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: GPUxMINE v${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          # Asset names are load-bearing. Velopack reads Releases/*; anything
+          # that renames these silently breaks self-update for every installed
+          # node, and nobody finds out until someone checks a version by hand.
+          files: |
+            Releases/*
+            gpuxmine-agent-linux-x64.zip
+            gpuxmine-relay-linux-x64.zip

@@ -1,0 +1,29 @@
+# --- build output ---
+bin/
+obj/
+publish/
+Releases/
+*.user
+*.suo
+.vs/
+.idea/
+
+# --- runtime state, never source ---
+# The relay writes enrolled workers here, hashed but still a list of who is on
+# the network. The agent's config can hold a live worker token.
+data/
+agent.json
+appsettings.Development.json
+appsettings.Local.json
+*.db
+*.sqlite
+
+# --- internal documents, deliberately not published ---
+# Business plan, economics, legal analysis and internal infrastructure names.
+# Kept in the working folder so it travels with the code, out of the repo so it
+# does not travel with the world. `git add -f PLAN.md` if that ever changes.
+PLAN.md
+docs/internal/
+
+# --- design source, lives with the design files not the code ---
+*.zip

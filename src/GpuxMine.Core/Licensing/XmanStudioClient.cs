@@ -1,0 +1,187 @@
+using System.Net.Http.Json;
+using System.Text.Json.Serialization;
+
+namespace GpuxMine.Core.Licensing;
+
+public sealed record DeviceRegistration(bool Ok, string? Message);
+
+public sealed record LicenseState(
+    bool Valid,
+    string? Status,
+    string? Plan,
+    DateTimeOffset? ExpiresAt,
+    string? Message)
+{
+    /// <summary>What the agent assumes when XMAN Studio cannot be reached.</summary>
+    /// <remarks>
+    /// Deliberately permissive. A node that stops earning because the licence
+    /// server had a bad ten minutes is a node whose owner uninstalls us; the
+    /// paid tier is an upgrade, not a gate on running at all. Anything that
+    /// genuinely must not happen without a licence is enforced server-side when
+    /// work is dispatched, where an offline client cannot vote.
+    /// </remarks>
+    public static LicenseState Unknown(string reason) => new(false, "unknown", null, null, reason);
+}
+
+public sealed record VersionInfo(
+    string? Latest,
+    bool UpdateAvailable,
+    string? DownloadUrl,
+    string? Changelog,
+    /// <summary>Set by the server when a build is too old to keep running.</summary>
+    bool ForceUpdate);
+
+/// <summary>
+/// Talks to XMAN Studio for the things the account system owns: which machine
+/// this is, whether it holds a licence, and what the newest published build is.
+/// </summary>
+/// <remarks>
+/// The binary update itself does NOT come through here — Velopack pulls that
+/// straight from GitHub Releases, exactly as the BrainX client does. This class
+/// is the control plane: it is what lets the platform see its fleet and, when
+/// a build has to go, say so.
+///
+/// Every call fails soft. Losing contact with the website must never stop a
+/// node rendering work it has already been given.
+/// </remarks>
+public sealed class XmanStudioClient(HttpClient http, string baseUrl, string productSlug = "gpuxmine")
+{
+    private readonly string _base = baseUrl.TrimEnd('/');
+
+    public async Task<DeviceRegistration> RegisterDeviceAsync(string appVersion, CancellationToken ct = default)
+    {
+        try
+        {
+            using HttpResponseMessage response = await http.PostAsJsonAsync(
+                $"{_base}/api/v1/product/{productSlug}/register-device",
+                new
+                {
+                    machine_id = MachineIdentity.MachineId(),
+                    machine_name = MachineIdentity.MachineName(),
+                    os_version = MachineIdentity.OsVersion(),
+                    app_version = appVersion,
+                    hardware_hash = MachineIdentity.HardwareHash(),
+                },
+                ct);
+
+            var body = await ReadAsync<ApiEnvelope>(response, ct);
+            return new DeviceRegistration(response.IsSuccessStatusCode && (body?.Success ?? false), body?.Message);
+        }
+        catch (Exception ex)
+        {
+            return new DeviceRegistration(false, ex.Message);
+        }
+    }
+
+    public async Task<LicenseState> ValidateAsync(string? licenseKey, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(licenseKey))
+            return new LicenseState(false, "none", "free", null, "ไม่ได้ใส่ license key — ใช้งานระดับฟรี");
+
+        try
+        {
+            using HttpResponseMessage response = await http.PostAsJsonAsync(
+                $"{_base}/api/v1/product/{productSlug}/validate",
+                new
+                {
+                    license_key = licenseKey,
+                    machine_id = MachineIdentity.MachineId(),
+                },
+                ct);
+
+            var body = await ReadAsync<LicenseEnvelope>(response, ct);
+            if (body is null) return LicenseState.Unknown("อ่านคำตอบจากเซิร์ฟเวอร์ไม่ได้");
+
+            return new LicenseState(
+                body.Success && string.Equals(body.Status, "active", StringComparison.OrdinalIgnoreCase),
+                body.Status,
+                body.Plan,
+                body.ExpiresAt,
+                body.Message);
+        }
+        catch (Exception ex)
+        {
+            return LicenseState.Unknown(ex.Message);
+        }
+    }
+
+    public async Task<VersionInfo?> CheckUpdateAsync(string currentVersion, string? licenseKey, CancellationToken ct = default)
+    {
+        try
+        {
+            using HttpResponseMessage response = await http.PostAsJsonAsync(
+                $"{_base}/api/v1/products/{productSlug}/check-update",
+                new
+                {
+                    current_version = currentVersion,
+                    license_key = licenseKey,
+                },
+                ct);
+
+            var body = await ReadAsync<UpdateEnvelope>(response, ct);
+            if (body is null || !body.Success) return null;
+
+            return new VersionInfo(
+                body.LatestVersion ?? body.Version?.Version,
+                body.HasUpdate ?? body.UpdateAvailable ?? false,
+                body.DownloadUrl,
+                body.Version?.Changelog,
+                body.ForceUpdate ?? false);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static async Task<T?> ReadAsync<T>(HttpResponseMessage response, CancellationToken ct) where T : class
+    {
+        try
+        {
+            return await response.Content.ReadFromJsonAsync<T>(ct);
+        }
+        catch
+        {
+            // A proxy or error page in place of JSON is a failure to answer, not
+            // a crash. Callers treat null as "could not tell".
+            return null;
+        }
+    }
+
+    // --- wire shapes -------------------------------------------------------
+    // Field names follow XMAN Studio's existing product API. Optional
+    // everywhere: these endpoints serve several products and have grown fields
+    // over time, so a missing one must never throw.
+
+    private sealed class ApiEnvelope
+    {
+        [JsonPropertyName("success")] public bool Success { get; set; }
+        [JsonPropertyName("message")] public string? Message { get; set; }
+    }
+
+    private sealed class LicenseEnvelope
+    {
+        [JsonPropertyName("success")] public bool Success { get; set; }
+        [JsonPropertyName("status")] public string? Status { get; set; }
+        [JsonPropertyName("plan")] public string? Plan { get; set; }
+        [JsonPropertyName("expires_at")] public DateTimeOffset? ExpiresAt { get; set; }
+        [JsonPropertyName("message")] public string? Message { get; set; }
+    }
+
+    private sealed class UpdateEnvelope
+    {
+        [JsonPropertyName("success")] public bool Success { get; set; }
+        [JsonPropertyName("has_update")] public bool? HasUpdate { get; set; }
+        [JsonPropertyName("update_available")] public bool? UpdateAvailable { get; set; }
+        [JsonPropertyName("latest_version")] public string? LatestVersion { get; set; }
+        [JsonPropertyName("download_url")] public string? DownloadUrl { get; set; }
+        [JsonPropertyName("force_update")] public bool? ForceUpdate { get; set; }
+        [JsonPropertyName("version")] public VersionBlock? Version { get; set; }
+
+        internal sealed class VersionBlock
+        {
+            [JsonPropertyName("version")] public string? Version { get; set; }
+            [JsonPropertyName("changelog")] public string? Changelog { get; set; }
+        }
+    }
+}

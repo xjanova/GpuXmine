@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>GpuxMine.Core</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Binary self-update. Same mechanism the BrainX client uses, so the
+         failure modes are already documented in the brain rather than waiting
+         to be discovered here. -->
+    <PackageReference Include="Velopack" Version="0.0.1298" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\GpuxMine.Protocol\GpuxMine.Protocol.csproj" />
+  </ItemGroup>
+</Project>
