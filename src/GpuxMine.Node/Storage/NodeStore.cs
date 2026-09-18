@@ -36,6 +36,9 @@ public sealed class NodeStore : IDisposable
 
     public string Path { get; }
 
+    /// <summary>Set when the ledger could not be opened and had to be replaced. The host tells the owner.</summary>
+    public string? RecoveredFrom { get; private set; }
+
     public NodeStore(string databasePath)
     {
         Path = databasePath;
@@ -47,20 +50,94 @@ public sealed class NodeStore : IDisposable
             Cache = SqliteCacheMode.Shared,
         }.ToString();
 
+        try
+        {
+            _keepAlive = OpenAndPrepare();
+        }
+        catch (SqliteException ex)
+        {
+            // A damaged ledger must not be the end of the node.
+            //
+            // It was, once: a file left inconsistent by an earlier version's
+            // data move threw 'database disk image is malformed' out of this
+            // constructor, straight through NodeHost's, and the window died
+            // before it opened. The machine was unrecoverable by its owner —
+            // no window, no message, and the file to delete was one they had
+            // never heard of.
+            //
+            // Losing history is bad. Being unable to start is worse, and it is
+            // the one of the two that also stops the node earning.
+            RecoveredFrom = Quarantine(databasePath, ex);
+            _keepAlive = OpenAndPrepare();
+        }
+
+        Migrate();
+    }
+
+    private SqliteConnection OpenAndPrepare()
+    {
         // One connection held open for the life of the node. Without it the
         // last connection closing would delete the WAL and checkpoint on every
         // single write, which is most of the cost of using SQLite badly.
-        _keepAlive = new SqliteConnection(_connectionString);
-        _keepAlive.Open();
+        var connection = new SqliteConnection(_connectionString);
+        try
+        {
+            connection.Open();
 
-        Execute(_keepAlive, """
-            PRAGMA journal_mode = WAL;
-            PRAGMA synchronous = NORMAL;
-            PRAGMA busy_timeout = 5000;
-            PRAGMA foreign_keys = ON;
-            """);
+            Execute(connection, """
+                PRAGMA journal_mode = WAL;
+                PRAGMA synchronous = NORMAL;
+                PRAGMA busy_timeout = 5000;
+                PRAGMA foreign_keys = ON;
+                """);
 
-        Migrate();
+            return connection;
+        }
+        catch
+        {
+            // Without this the failed connection keeps the file open, and the
+            // quarantine that is about to run cannot move it — which turned a
+            // recoverable corrupt ledger back into a node that will not start.
+            connection.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Moves a database we cannot open out of the way, and reports where it went.
+    /// </summary>
+    /// <remarks>
+    /// Kept rather than deleted. It is the owner's record of work they did, it
+    /// may still be readable by hand, and silently destroying the file that
+    /// proves a payout is the wrong instinct even when it is unreadable to us.
+    /// </remarks>
+    private static string Quarantine(string databasePath, SqliteException cause)
+    {
+        string stamp = DateTimeOffset.UtcNow.ToString("yyyyMMddHHmmss");
+        string kept = $"{databasePath}.corrupt-{stamp}";
+
+        SqliteConnection.ClearAllPools();
+
+        foreach (string suffix in new[] { "", "-wal", "-shm" })
+        {
+            string source = databasePath + suffix;
+            if (!File.Exists(source)) continue;
+            try
+            {
+                // The WAL and shm go too: leaving either beside a fresh
+                // database is how this happened in the first place.
+                File.Move(source, kept + suffix, overwrite: true);
+            }
+            catch
+            {
+                try { File.Delete(source); } catch { /* nothing further to try */ }
+            }
+        }
+
+        if (File.Exists(databasePath))
+            throw new InvalidOperationException($"Could not set aside the damaged ledger at {databasePath}: {cause.Message}", cause);
+
+        return kept;
     }
 
     private SqliteConnection Open()

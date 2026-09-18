@@ -88,6 +88,12 @@ public sealed class NodeHost : IAsyncDisposable
         NodeSettings.MigrateLegacyFile(options.DataDirectory, Store);
         Settings = NodeSettings.Load(Store);
         Log = new ActivityLog(Store, alsoLogTo);
+
+        // Said as the first thing in the log, because the owner is about to
+        // find their history empty and deserves to know why rather than
+        // wonder whether the platform lost their work on purpose.
+        if (Store.RecoveredFrom is { } kept)
+            Log.Warn($"[warn] ประวัติงานเดิมเสียหาย อ่านไม่ได้ — เริ่มไฟล์ใหม่ ของเดิมเก็บไว้ที่ {kept}");
         Jobs = new JobHistory(Store);
 
         var nothing = new NullTelemetry();
