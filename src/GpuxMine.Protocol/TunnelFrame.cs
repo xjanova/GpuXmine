@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace GpuxMine.Protocol;
@@ -174,4 +175,26 @@ public sealed class AgentTelemetry
     /// <summary>The machine's own name, so the back office lists rigs the way their owner talks about them.</summary>
     [JsonPropertyName("host")]
     public string? Host { get; set; }
+
+    /// <summary>
+    /// Anything the reading build has no property for, kept and written back
+    /// out unchanged.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The relay is a courier, not a reader: it takes this object off the
+    /// agent's heartbeat and hands it to XMAN Studio. Without this it was also
+    /// a filter — it deserialized into its own copy of this class and
+    /// re-serialized, so every field newer than the deployed relay was silently
+    /// dropped on the way through. <c>lanes</c> was added to the client, the
+    /// client sent it, and the relay delivered telemetry without it.
+    /// </para>
+    /// <para>
+    /// A node's telemetry should never need the relay to be redeployed to reach
+    /// the far side. This is what makes the relay version-independent of the
+    /// fleet, which matters most for the field it does not know about yet.
+    /// </para>
+    /// </remarks>
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? Extra { get; set; }
 }
