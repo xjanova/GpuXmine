@@ -9,6 +9,7 @@
     <c:BoolToVisibility x:Key="VisInv" Invert="True"/>
     <c:NullToVisibility x:Key="NullVis"/>
     <c:BoolInvert x:Key="Not"/>
+    <c:WidthAtLeast x:Key="WidthAtLeast"/>
     <c:ChannelToBrush x:Key="ChannelBrush"/>
 
     <!-- ======================================================================
@@ -348,6 +349,22 @@
     </Style>
 
     <!-- Sidebar navigation row: a RadioButton so exactly one is active -->
+
+    <!-- ══ ไอคอนเมนูข้าง ══
+         วาดเป็นเวกเตอร์เอง ไม่ใช้ฟอนต์ไอคอน (Segoe MDL2 / Fluent) เพราะฟอนต์
+         ที่เครื่องปลายทางไม่มีจะกลายเป็นสี่เหลี่ยมโหว่ และเรากำลังส่งโปรแกรมนี้
+         ไปลงเครื่องคนอื่นที่เราไม่ได้เลือก Windows รุ่นให้
+         ทุกตัววาดบนผืน 16×16 เป็นเส้น ให้เข้ากับงานเส้นของ chrome ทั้งชุด -->
+    <Geometry x:Key="NavIcoDashboard">M2,12 A6,6 0 1 1 14,12 M8,12 L11.5,7.5</Geometry>
+    <Geometry x:Key="NavIcoPower">M9.5,1.5 L4,9 H7.5 L6.5,14.5 L12,7 H8.5 Z</Geometry>
+    <Geometry x:Key="NavIcoModels">M8,2 L14,5.5 L8,9 L2,5.5 Z M2,9.5 L8,13 L14,9.5</Geometry>
+    <Geometry x:Key="NavIcoQueue">M2,4 H10 M2,8 H10 M2,12 H7 M11.5,9.5 L15,12 L11.5,14.5 Z</Geometry>
+    <Geometry x:Key="NavIcoWallet">M2,4.5 H12.5 A1.5,1.5 0 0 1 14,6 V12 A1.5,1.5 0 0 1 12.5,13.5 H3.5 A1.5,1.5 0 0 1 2,12 Z M10.5,9 H12.5</Geometry>
+    <Geometry x:Key="NavIcoBenchmark">M2,14 H14 M4,14 V9 M7.5,14 V3.5 M11,14 V6.5</Geometry>
+    <Geometry x:Key="NavIcoLog">M4,2 H9.5 L12.5,5 V14 H4 Z M9.5,2 V5 H12.5 M6,8 H10.5 M6,11 H10.5</Geometry>
+    <Geometry x:Key="NavIcoReferrals">M4.2,8 L10.5,4.6 M4.2,8 L10.5,11.4 M4,8 m-2,0 a2,2 0 1,0 4,0 a2,2 0 1,0 -4,0 M12,4 m-2,0 a2,2 0 1,0 4,0 a2,2 0 1,0 -4,0 M12,12 m-2,0 a2,2 0 1,0 4,0 a2,2 0 1,0 -4,0</Geometry>
+    <Geometry x:Key="NavIcoSettings">M2,4.5 H13.5 M2,11.5 H13.5 M5.5,4.5 m-1.6,0 a1.6,1.6 0 1,0 3.2,0 a1.6,1.6 0 1,0 -3.2,0 M10,11.5 m-1.6,0 a1.6,1.6 0 1,0 3.2,0 a1.6,1.6 0 1,0 -3.2,0</Geometry>
+
     <Style x:Key="NavButton" TargetType="RadioButton">
         <Setter Property="FontFamily" Value="{StaticResource UiFont}"/>
         <Setter Property="FontSize" Value="12"/>
@@ -361,8 +378,16 @@
                     <Border x:Name="Row" Background="{StaticResource NavInactive}" BorderBrush="{StaticResource ChromeBorderLight}"
                             BorderThickness="1" CornerRadius="6" Padding="10,8">
                         <StackPanel Orientation="Horizontal">
-                            <Border x:Name="Chip" Width="13" Height="13" CornerRadius="3" Margin="0,0,8,0"
-                                    Background="{StaticResource GreyFill}" BorderBrush="{StaticResource ButtonBorder}" BorderThickness="1"/>
+                            <!-- Tag คือรูปทรงของไอคอน ตั้งไว้ที่ปุ่มแต่ละตัวใน MainWindow
+                                 เก็บไว้ใน Viewbox 16×16 ให้ทุกไอคอนกินที่เท่ากันเป๊ะ
+                                 ข้อความจึงเรียงตรงกันทุกแถวไม่ว่าไอคอนจะรูปร่างอย่างไร -->
+                            <Viewbox Width="15" Height="15" Margin="0,0,9,0" VerticalAlignment="Center">
+                                <Canvas Width="16" Height="16">
+                                    <Path x:Name="Ico" Data="{Binding Tag, RelativeSource={RelativeSource TemplatedParent}}"
+                                          Stroke="{StaticResource InkLabel}" StrokeThickness="1.4"
+                                          StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
+                                </Canvas>
+                            </Viewbox>
                             <ContentPresenter VerticalAlignment="Center"/>
                         </StackPanel>
                     </Border>
@@ -370,7 +395,8 @@
                         <Trigger Property="IsChecked" Value="True">
                             <Setter TargetName="Row" Property="Background" Value="{StaticResource NavActive}"/>
                             <Setter TargetName="Row" Property="BorderBrush" Value="{StaticResource GoldBorderNav}"/>
-                            <Setter TargetName="Chip" Property="Background" Value="{StaticResource GoldFill}"/>
+                            <Setter TargetName="Ico" Property="Stroke" Value="{StaticResource GoldBorderNav}"/>
+                            <Setter TargetName="Ico" Property="StrokeThickness" Value="1.7"/>
                         </Trigger>
                         <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Row" Property="Opacity" Value="0.92"/></Trigger>
                     </ControlTemplate.Triggers>
@@ -385,16 +411,26 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="CheckBox">
-                    <StackPanel Orientation="Horizontal">
-                        <Grid Width="44" Height="22" Margin="0,0,10,0">
+                    <!-- Grid ไม่ใช่ StackPanel แนวนอน
+                         StackPanel แนวนอนวัดลูกด้วยความกว้างไม่จำกัด ข้อความที่ตั้ง
+                         TextWrapping ไว้จึงไม่มีวันขึ้นบรรทัดใหม่ — มันยาวออกไปเรื่อย ๆ
+                         แล้วโดนพ่อแม่ตัดทิ้งกลางคำ เห็นชัดตอนย่อหน้าต่าง:
+                         "(เขียนคีย์ Run ข" แล้วหายไปดื้อ ๆ
+                         คอลัมน์ * ให้ความกว้างที่แท้จริง การ wrap จึงทำงาน -->
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Grid Grid.Column="0" Width="44" Height="22" Margin="0,0,10,0" VerticalAlignment="Top">
                             <Border x:Name="Track" CornerRadius="11" Background="{StaticResource ToggleOff}" BorderBrush="#5c646d" BorderThickness="1"/>
                             <Border x:Name="Knob" Width="18" Height="18" CornerRadius="9" HorizontalAlignment="Left" Margin="2,0,0,0"
                                     Background="{StaticResource ChromeButtonFace}" BorderBrush="{StaticResource ButtonBorder}" BorderThickness="1">
                                 <Border.RenderTransform><TranslateTransform x:Name="KnobShift" X="0"/></Border.RenderTransform>
                             </Border>
                         </Grid>
-                        <ContentPresenter VerticalAlignment="Center"/>
-                    </StackPanel>
+                        <ContentPresenter Grid.Column="1" VerticalAlignment="Center"/>
+                    </Grid>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsChecked" Value="True">
                             <Setter TargetName="Track" Property="Background" Value="{StaticResource ToggleOn}"/>

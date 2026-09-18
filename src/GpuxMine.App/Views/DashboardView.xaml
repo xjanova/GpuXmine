@@ -12,9 +12,9 @@
         <!-- Row 1: status + gauges -->
         <Grid Grid.Row="0">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="2*" MinWidth="330"/>
                 <ColumnDefinition Width="13"/>
-                <ColumnDefinition Width="246"/>
+                <ColumnDefinition Width="*" MinWidth="220" MaxWidth="320"/>
             </Grid.ColumnDefinitions>
 
             <Border Grid.Column="0" Style="{StaticResource ChromePanelStyle}">

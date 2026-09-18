@@ -46,10 +46,44 @@ public partial class MainWindow : Window
         ScreenHost.Content = view;
     }
 
+    /// <summary>
+    /// Drags the window, and maximises on a double click like any other title bar.
+    /// </summary>
+    /// <remarks>
+    /// Dragging a maximised window has to restore it first, and the restored
+    /// window has to land under the cursor rather than jumping to wherever it
+    /// happened to be before — otherwise grabbing the title bar of a maximised
+    /// window throws it across the screen.
+    /// </remarks>
     private void TitleBar_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if (e.ButtonState == MouseButtonState.Pressed) DragMove();
+        if (e.ButtonState != MouseButtonState.Pressed) return;
+
+        if (e.ClickCount == 2)
+        {
+            ToggleMaximised();
+            return;
+        }
+
+        if (WindowState == WindowState.Maximized)
+        {
+            double ratio = e.GetPosition(this).X / ActualWidth;
+            WindowState = WindowState.Normal;
+
+            // Put the restored window under the pointer, proportionally to
+            // where along the bar it was grabbed.
+            var cursor = PointToScreen(e.GetPosition(this));
+            Left = cursor.X - RestoreBounds.Width * ratio;
+            Top = cursor.Y - e.GetPosition(this).Y;
+        }
+
+        DragMove();
     }
+
+    private void Maximize_Click(object sender, RoutedEventArgs e) => ToggleMaximised();
+
+    private void ToggleMaximised() =>
+        WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
 
     private void Minimize_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
 

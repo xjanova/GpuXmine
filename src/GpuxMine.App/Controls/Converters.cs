@@ -67,3 +67,27 @@ public sealed class EqualsToBool : IValueConverter
     public object Convert(object value, Type t, object p, CultureInfo c) => Equals(value?.ToString(), p?.ToString());
     public object? ConvertBack(object value, Type t, object p, CultureInfo c) => value is true ? p?.ToString() : Binding.DoNothing;
 }
+
+/// <summary>
+/// Shows an element only while the window is at least N pixels wide.
+/// </summary>
+/// <remarks>
+/// The honest way to fit a row of status text into a window the owner can now
+/// drag narrow. The alternative — letting a left-aligned run and a
+/// right-aligned one share one cell — does not fail by clipping, it fails by
+/// printing both on top of each other, which costs the reader both.
+///
+/// Dropping the least important item first keeps what is left readable
+/// instead of turning everything to mush.
+/// </remarks>
+public sealed class WidthAtLeast : IValueConverter
+{
+    public object Convert(object value, Type t, object p, CultureInfo c)
+    {
+        double width = value is double d ? d : 0;
+        double needed = p is string s && double.TryParse(s, NumberStyles.Any, CultureInfo.InvariantCulture, out var n) ? n : 0;
+        return width >= needed ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    public object ConvertBack(object v, Type t, object p, CultureInfo c) => throw new NotSupportedException();
+}

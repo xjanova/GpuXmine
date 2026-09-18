@@ -6,7 +6,7 @@
         <c:CellStateToBrush x:Key="CellBrush" Share="{StaticResource GoldCell}" Cheap="{StaticResource BlueCell}" Mine="{StaticResource GreyFill}"/>
     </UserControl.Resources>
     <Grid>
-        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="13"/><ColumnDefinition Width="300"/></Grid.ColumnDefinitions>
+        <Grid.ColumnDefinitions><ColumnDefinition Width="2*" MinWidth="330"/><ColumnDefinition Width="13"/><ColumnDefinition Width="*" MinWidth="250" MaxWidth="360"/></Grid.ColumnDefinitions>
 
         <StackPanel Grid.Column="0">
             <Border Style="{StaticResource ChromePanelStyle}">
@@ -54,13 +54,13 @@
                     </StackPanel>
                     <Rectangle Height="1" Fill="{StaticResource ChromeBorderLight}" Margin="0,12"/>
                     <CheckBox Style="{StaticResource ToggleSwitch}" IsChecked="{Binding StartWithWindows}">
-                        <StackPanel><TextBlock Text="Start with Windows" Style="{StaticResource BodyBold}"/><TextBlock Text="เปิดพร้อม Windows แล้วแชร์ต่อจากที่ค้างไว้ (เขียนคีย์ Run ของผู้ใช้ปัจจุบัน)" Style="{StaticResource Muted}"/></StackPanel>
+                        <StackPanel><TextBlock Text="Start with Windows" Style="{StaticResource BodyBold}"/><TextBlock Text="เปิดพร้อม Windows แล้วแชร์ต่อจากที่ค้างไว้ (เขียนคีย์ Run ของผู้ใช้ปัจจุบัน)" Style="{StaticResource Muted}" TextWrapping="Wrap"/></StackPanel>
                     </CheckBox>
                     <CheckBox Style="{StaticResource ToggleSwitch}" IsChecked="{Binding Notifications}" Margin="0,10,0,0">
-                        <StackPanel><TextBlock Text="Payout &amp; warning notifications" Style="{StaticResource BodyBold}"/><TextBlock Text="ยอดตัดเข้ากระเป๋า โหนดหลุด อุณหภูมิถึงเพดาน" Style="{StaticResource Muted}"/></StackPanel>
+                        <StackPanel><TextBlock Text="Payout &amp; warning notifications" Style="{StaticResource BodyBold}"/><TextBlock Text="ยอดตัดเข้ากระเป๋า โหนดหลุด อุณหภูมิถึงเพดาน" Style="{StaticResource Muted}" TextWrapping="Wrap"/></StackPanel>
                     </CheckBox>
                     <CheckBox Style="{StaticResource ToggleSwitch}" IsChecked="{Binding LeaderboardAnonymous}" Margin="0,10,0,0">
-                        <StackPanel><TextBlock Text="ไม่ประสงค์ออกนามในทำเนียบผู้บริจาค" Style="{StaticResource BodyBold}"/><TextBlock Text="ยอดแชร์ฟรีของคุณจะแสดงเป็น 'ผู้ไม่ประสงค์ออกนาม'" Style="{StaticResource Muted}"/></StackPanel>
+                        <StackPanel><TextBlock Text="ไม่ประสงค์ออกนามในทำเนียบผู้บริจาค" Style="{StaticResource BodyBold}"/><TextBlock Text="ยอดแชร์ฟรีของคุณจะแสดงเป็น 'ผู้ไม่ประสงค์ออกนาม'" Style="{StaticResource Muted}" TextWrapping="Wrap"/></StackPanel>
                     </CheckBox>
                 </StackPanel>
             </Border>
@@ -84,7 +84,7 @@
                     <Grid Margin="0,0,0,6"><TextBlock Text="relay" Style="{StaticResource Body}"/><TextBlock Text="{Binding RelayHostText}" Style="{StaticResource Mono}" HorizontalAlignment="Right"/></Grid>
                     <Grid Margin="0,0,0,6"><TextBlock Text="client" Style="{StaticResource Body}"/><TextBlock Style="{StaticResource Mono}" HorizontalAlignment="Right"><Run Text="v"/><Run Text="{Binding VersionText, Mode=OneWay}"/></TextBlock></Grid>
                     <Grid Margin="0,0,0,6"><TextBlock Text="machine" Style="{StaticResource Body}"/><TextBlock Text="{Binding MachineIdShort}" Style="{StaticResource Mono}" HorizontalAlignment="Right"/></Grid>
-                    <Grid Margin="0,0,0,10"><TextBlock Text="window" Style="{StaticResource Body}"/><TextBlock Text="1180×780 fixed" Style="{StaticResource Mono}" HorizontalAlignment="Right"/></Grid>
+                    
                     <TextBlock Text="{Binding ConfigureHint}" Style="{StaticResource Muted}" Foreground="{StaticResource RedDark}"/>
 
                     <!-- ลงทะเบียนเครื่อง: ทางเดียวที่เครื่องได้ตัวตนของตัวเอง -->

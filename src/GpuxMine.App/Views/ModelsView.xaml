@@ -50,7 +50,7 @@
         </Border>
 
         <Grid Grid.Row="2">
-            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="13"/><ColumnDefinition Width="300"/></Grid.ColumnDefinitions>
+            <Grid.ColumnDefinitions><ColumnDefinition Width="2*" MinWidth="330"/><ColumnDefinition Width="13"/><ColumnDefinition Width="*" MinWidth="250" MaxWidth="360"/></Grid.ColumnDefinitions>
 
             <Border Grid.Column="0" Style="{StaticResource ChromePanelStyle}">
                 <StackPanel>

@@ -2,19 +2,41 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:c="clr-namespace:GpuxMine.App.Controls"
-        Title="GPUxMINE" Width="1194" Height="794" ResizeMode="NoResize"
-        WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+        Title="GPUxMINE" Width="1194" Height="794"
+        MinWidth="880" MinHeight="600"
+        ResizeMode="CanResize" WindowStyle="None" Background="{StaticResource Bezel}"
         WindowStartupLocation="CenterScreen" FontFamily="{StaticResource UiFont}" TextOptions.TextFormattingMode="Display">
 
+    <!--
+        WindowChrome instead of AllowsTransparency.
 
-    <!-- Outer chrome bezel: 7 px, radius 12 -->
-    <Border Background="{StaticResource Bezel}" CornerRadius="12" Padding="7">
-        <Border.Effect><DropShadowEffect Color="#080c12" BlurRadius="50" ShadowDepth="24" Direction="270" Opacity="0.6"/></Border.Effect>
+        The window used to be a fixed 1180x780 with no resize at all, because
+        WindowStyle=None plus AllowsTransparency removes the non-client area
+        that Windows resizes by — the drop shadow and rounded corners cost the
+        window every edge it could be dragged from, and Aero Snap and maximise
+        with it.
+
+        WindowChrome keeps the custom title bar and gives all of that back:
+        real resize borders, snapping, double-click to maximise, and the
+        rounded corners and shadow Windows 11 draws for every other window.
+
+        CaptionHeight=0 because the title bar handles its own dragging; leaving
+        it non-zero would let Windows swallow clicks meant for the buttons.
+    -->
+    <WindowChrome.WindowChrome>
+        <shell:WindowChrome CaptionHeight="0" ResizeBorderThickness="6"
+                            GlassFrameThickness="0" CornerRadius="0"
+                            UseAeroCaptionButtons="False"/>
+    </WindowChrome.WindowChrome>
+
+    <!-- Outer chrome bezel. The 7 px padding sits over the 6 px resize border,
+         so the bezel is exactly where the cursor finds an edge to drag. -->
+    <Border Background="{StaticResource Bezel}" Padding="7">
         <Border CornerRadius="7" BorderBrush="{StaticResource ChromeBorderDark}" BorderThickness="1" ClipToBounds="True">
             <Grid>
                 <Grid.RowDefinitions>
-                    <RowDefinition Height="40"/>
-                    <RowDefinition Height="26"/>
+                    <RowDefinition Height="58"/>
                     <RowDefinition Height="*"/>
                     <RowDefinition Height="26"/>
                 </Grid.RowDefinitions>
@@ -22,24 +44,44 @@
                 <!-- ===== Title bar (gold) — drag handle ===== -->
                 <Border Grid.Row="0" Background="{StaticResource TitleGold}" BorderBrush="{StaticResource TitleBorder}" BorderThickness="0,0,0,1"
                         MouseLeftButtonDown="TitleBar_MouseLeftButtonDown" CornerRadius="6,6,0,0">
+                    <!-- สองคอลัมน์ ไม่ใช่ทับกันในช่องเดียว: ปุ่มจองที่ของตัวเองไว้เสมอ
+                         ส่วนชื่อ/เวอร์ชันทางซ้ายย่อและตัดท้ายด้วย … เมื่อที่ไม่พอ -->
                     <Grid>
-                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="10,0,0,0">
-                            <Border Width="23" Height="23" CornerRadius="5" Background="#1b2026" BorderBrush="#5a4a18" BorderThickness="1" Margin="0,0,9,0">
-                                <Ellipse Width="9" Height="9" Fill="#ffd77a">
-                                    <Ellipse.Effect><DropShadowEffect Color="#ffbe46" BlurRadius="8" ShadowDepth="0" Opacity="0.8"/></Ellipse.Effect>
-                                </Ellipse>
-                            </Border>
-                            <!-- The wordmark is 3:1; 26 px tall gives it ~78 px to be read at, which 22 did not. -->
-                            <Image Source="/Assets/logo.png" Height="26" Margin="0,0,12,0" RenderOptions.BitmapScalingMode="HighQuality" VerticalAlignment="Center"/>
-                            <TextBlock VerticalAlignment="Center" FontSize="11" Foreground="#5d4a14">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" MinWidth="0"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,8,0">
+                            <!-- โลโก้เต็มความสูงแถบ ไม่มีอะไรมาบังหน้า
+                                 ไฟล์ต้นฉบับ 2172x724 จึงเหลือความละเอียดเหลือเฟือแม้ที่
+                                 ความสูงนี้ — ที่เคยดูไม่ชัดคือเพราะย่อเหลือ 26 px
+                                 UseLayoutRounding ให้ขอบตกลงบนพิกเซลจริง ไม่เบลอครึ่งพิกเซล -->
+                            <Image Source="/Assets/logo.png" Height="46" Margin="0,0,16,0"
+                                   RenderOptions.BitmapScalingMode="HighQuality"
+                                   UseLayoutRounding="True" SnapsToDevicePixels="True"
+                                   VerticalAlignment="Center">
+                                <!-- เงาไม่ใช่ของประดับ แต่เป็นตัวแก้คอนทราสต์
+                                     โลโก้เป็นงานโลหะเทา-ขาว (สีเด่น #202020 กับ #e0e0e0)
+                                     ความสว่างเฉลี่ย 140 ส่วนแถบทองสว่างราว 197 — ส่วนสว่าง
+                                     ของโลโก้จึงจมหายไปในพื้น มันถูกออกแบบมาให้วางบนพื้นเข้ม
+                                     เงาเข้มชิด ๆ ให้ขอบกับส่วนสว่างพวกนั้นโดยไม่ต้องเอาแผ่น
+                                     รองสีเข้มมาบัง ซึ่งเป็นสิ่งที่เพิ่งเอาออกไป -->
+                                <Image.Effect>
+                                    <DropShadowEffect Color="#2a2205" BlurRadius="5" ShadowDepth="1.5"
+                                                      Direction="270" Opacity="0.65"/>
+                                </Image.Effect>
+                            </Image>
+                            <TextBlock VerticalAlignment="Center" FontSize="11" Foreground="#5d4a14"
+                                       TextTrimming="CharacterEllipsis" ToolTip="{Binding WorkerIdText}">
                                 <Run Text="Worker Node — "/><Run Text="{Binding WorkerIdText, Mode=OneWay}"/><Run Text=" · v"/><Run Text="{Binding VersionText, Mode=OneWay}"/>
                             </TextBlock>
                         </StackPanel>
-                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,8,0">
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,8,0">
                             <Button Width="25" Height="22" Margin="3,0" Style="{StaticResource ChromeButton}" Padding="0" Click="Minimize_Click" ToolTip="ย่อ">
                                 <Rectangle Width="9" Height="2" Fill="#2c3238"/>
                             </Button>
-                            <Button Width="25" Height="22" Margin="3,0" Style="{StaticResource ChromeButton}" Padding="0" IsEnabled="False" ToolTip="ขนาดคงที่ 1180×780">
+                            <Button Width="25" Height="22" Margin="3,0" Style="{StaticResource ChromeButton}" Padding="0"
+                                    Click="Maximize_Click" ToolTip="ขยาย / คืนขนาด">
                                 <Rectangle Width="9" Height="8" Stroke="#2c3238" StrokeThickness="1.5"/>
                             </Button>
                             <Button Width="25" Height="22" Margin="3,0" Padding="0" Click="Close_Click" ToolTip="ปิด">
@@ -55,24 +97,8 @@
                     </Grid>
                 </Border>
 
-                <!-- ===== Menu bar ===== -->
-                <Border Grid.Row="1" Background="{StaticResource MenuBar}" BorderBrush="{StaticResource ChromeBorderLight}" BorderThickness="0,0,0,1">
-                    <Grid>
-                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="10,0">
-                            <TextBlock Text="File" FontSize="11.5" Foreground="#33383e" Margin="0,0,16,0"/>
-                            <TextBlock Text="View" FontSize="11.5" Foreground="#33383e" Margin="0,0,16,0"/>
-                            <TextBlock Text="Node" FontSize="11.5" Foreground="#33383e" Margin="0,0,16,0"/>
-                            <TextBlock Text="Tools" FontSize="11.5" Foreground="#33383e" Margin="0,0,16,0"/>
-                            <TextBlock Text="Help" FontSize="11.5" Foreground="#33383e"/>
-                        </StackPanel>
-                        <TextBlock HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,12,0" FontSize="11" Foreground="#4b5259">
-                            <Run Text="{Binding UpdateStatus, Mode=OneWay, TargetNullValue=Auto-update: on}"/>
-                        </TextBlock>
-                    </Grid>
-                </Border>
-
                 <!-- ===== Body ===== -->
-                <Grid Grid.Row="2">
+                <Grid Grid.Row="1">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="190"/>
                         <ColumnDefinition Width="*"/>
@@ -81,17 +107,22 @@
                     <!-- Sidebar -->
                     <Border Grid.Column="0" Background="{StaticResource Sidebar}" BorderBrush="{StaticResource SidebarBorder}" BorderThickness="0,0,1,0" Padding="10,12">
                         <DockPanel LastChildFill="False">
-                            <StackPanel DockPanel.Dock="Top">
+                            <!-- รายการเมนูเลื่อนได้ ส่วน POOL LINK ปักอยู่ล่างสุดเสมอ
+                                 หน้าต่างเตี้ยกว่าเนื้อหาเมื่อไร ของล่างสุดจะถูกตัดหายเงียบ ๆ
+                                 ซึ่งพอดีเป็นไฟบอกสถานะการเชื่อมต่อ = ชิ้นที่ต้องเห็นที่สุด -->
+                            <ScrollViewer DockPanel.Dock="Top" VerticalScrollBarVisibility="Auto"
+                                          HorizontalScrollBarVisibility="Disabled" Focusable="False">
+                            <StackPanel>
                                 <TextBlock Text="CONSOLE" FontSize="10" FontWeight="Bold" Foreground="{StaticResource InkLabel}" Margin="2,0,0,8"/>
-                                <RadioButton Style="{StaticResource NavButton}" GroupName="nav" Content="Dashboard"     IsChecked="{Binding CurrentScreen, Converter={StaticResource EqualsToBool}, ConverterParameter=dashboard, Mode=TwoWay}"/>
-                                <RadioButton Style="{StaticResource NavButton}" GroupName="nav" Content="Power &amp; Limits" IsChecked="{Binding CurrentScreen, Converter={StaticResource EqualsToBool}, ConverterParameter=power, Mode=TwoWay}"/>
-                                <RadioButton Style="{StaticResource NavButton}" GroupName="nav" Content="Models &amp; Jobs"  IsChecked="{Binding CurrentScreen, Converter={StaticResource EqualsToBool}, ConverterParameter=models, Mode=TwoWay}"/>
-                                <RadioButton Style="{StaticResource NavButton}" GroupName="nav" Content="Live Queue"    IsChecked="{Binding CurrentScreen, Converter={StaticResource EqualsToBool}, ConverterParameter=queue, Mode=TwoWay}"/>
-                                <RadioButton Style="{StaticResource NavButton}" GroupName="nav" Content="Wallet"        IsChecked="{Binding CurrentScreen, Converter={StaticResource EqualsToBool}, ConverterParameter=wallet, Mode=TwoWay}"/>
-                                <RadioButton Style="{StaticResource NavButton}" GroupName="nav" Content="Benchmark"     IsChecked="{Binding CurrentScreen, Converter={StaticResource EqualsToBool}, ConverterParameter=benchmark, Mode=TwoWay}"/>
-                                <RadioButton Style="{StaticResource NavButton}" GroupName="nav" Content="Activity Log"  IsChecked="{Binding CurrentScreen, Converter={StaticResource EqualsToBool}, ConverterParameter=log, Mode=TwoWay}"/>
-                                <RadioButton Style="{StaticResource NavButton}" GroupName="nav" Content="Referrals"     IsChecked="{Binding CurrentScreen, Converter={StaticResource EqualsToBool}, ConverterParameter=referrals, Mode=TwoWay}"/>
-                                <RadioButton Style="{StaticResource NavButton}" GroupName="nav" Content="Settings"      IsChecked="{Binding CurrentScreen, Converter={StaticResource EqualsToBool}, ConverterParameter=settings, Mode=TwoWay}"/>
+                                <RadioButton Style="{StaticResource NavButton}" GroupName="nav" Tag="{StaticResource NavIcoDashboard}" Content="Dashboard"     IsChecked="{Binding CurrentScreen, Converter={StaticResource EqualsToBool}, ConverterParameter=dashboard, Mode=TwoWay}"/>
+                                <RadioButton Style="{StaticResource NavButton}" GroupName="nav" Tag="{StaticResource NavIcoPower}" Content="Power &amp; Limits" IsChecked="{Binding CurrentScreen, Converter={StaticResource EqualsToBool}, ConverterParameter=power, Mode=TwoWay}"/>
+                                <RadioButton Style="{StaticResource NavButton}" GroupName="nav" Tag="{StaticResource NavIcoModels}" Content="Models &amp; Jobs"  IsChecked="{Binding CurrentScreen, Converter={StaticResource EqualsToBool}, ConverterParameter=models, Mode=TwoWay}"/>
+                                <RadioButton Style="{StaticResource NavButton}" GroupName="nav" Tag="{StaticResource NavIcoQueue}" Content="Live Queue"    IsChecked="{Binding CurrentScreen, Converter={StaticResource EqualsToBool}, ConverterParameter=queue, Mode=TwoWay}"/>
+                                <RadioButton Style="{StaticResource NavButton}" GroupName="nav" Tag="{StaticResource NavIcoWallet}" Content="Wallet"        IsChecked="{Binding CurrentScreen, Converter={StaticResource EqualsToBool}, ConverterParameter=wallet, Mode=TwoWay}"/>
+                                <RadioButton Style="{StaticResource NavButton}" GroupName="nav" Tag="{StaticResource NavIcoBenchmark}" Content="Benchmark"     IsChecked="{Binding CurrentScreen, Converter={StaticResource EqualsToBool}, ConverterParameter=benchmark, Mode=TwoWay}"/>
+                                <RadioButton Style="{StaticResource NavButton}" GroupName="nav" Tag="{StaticResource NavIcoLog}" Content="Activity Log"  IsChecked="{Binding CurrentScreen, Converter={StaticResource EqualsToBool}, ConverterParameter=log, Mode=TwoWay}"/>
+                                <RadioButton Style="{StaticResource NavButton}" GroupName="nav" Tag="{StaticResource NavIcoReferrals}" Content="Referrals"     IsChecked="{Binding CurrentScreen, Converter={StaticResource EqualsToBool}, ConverterParameter=referrals, Mode=TwoWay}"/>
+                                <RadioButton Style="{StaticResource NavButton}" GroupName="nav" Tag="{StaticResource NavIcoSettings}" Content="Settings"      IsChecked="{Binding CurrentScreen, Converter={StaticResource EqualsToBool}, ConverterParameter=settings, Mode=TwoWay}"/>
 
                                 <!-- DETECTED GPU -->
                                 <Border Style="{StaticResource ChromePanelStyle}" Padding="10" Margin="0,14,0,0">
@@ -105,6 +136,7 @@
                                     </StackPanel>
                                 </Border>
                             </StackPanel>
+                            </ScrollViewer>
 
                             <!-- POOL LINK -->
                             <Border DockPanel.Dock="Bottom" Style="{StaticResource LcdPanelStyle}" Padding="10,8">
@@ -136,22 +168,52 @@
 
                     <!-- Content -->
                     <Border Grid.Column="1" Background="{StaticResource Content}" Padding="15,15,17,17">
-                        <!-- One screen at a time; the code-behind swaps them by name. -->
-                        <ContentControl x:Name="ScreenHost"/>
+                        <!-- เลื่อนได้เมื่อหน้าต่างเตี้ยกว่าเนื้อหา
+                             ก่อนหน้านี้หน้าต่างสูงคงที่ เนื้อหาจึงพอดีเสมอ พอย่อได้แล้ว
+                             การ์ดล่างสุดจะถูกตัดหายโดยไม่มีอะไรบอก — เลื่อนดีกว่าตัดทิ้ง
+                             ปิดแนวนอนไว้ เพราะคอลัมน์ในหน้าหดตามอยู่แล้ว การเลื่อนซ้ายขวา
+                             จะแปลว่ามีอะไรสักอย่างไม่ยอมหด ซึ่งเป็นบั๊ก ไม่ใช่ฟีเจอร์ -->
+                        <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                                      Padding="0,0,4,0" Focusable="False">
+                            <!-- One screen at a time; the code-behind swaps them by name. -->
+                            <ContentControl x:Name="ScreenHost"/>
+                        </ScrollViewer>
                     </Border>
                 </Grid>
 
                 <!-- ===== Status bar ===== -->
-                <Border Grid.Row="3" Background="{StaticResource MenuBar}" BorderBrush="{StaticResource ChromeBorderLight}" BorderThickness="0,1,0,0" CornerRadius="0,0,6,6">
+                <Border Grid.Row="2" Background="{StaticResource MenuBar}" BorderBrush="{StaticResource ChromeBorderLight}" BorderThickness="0,1,0,0" CornerRadius="0,0,6,6">
                     <Grid>
-                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="10,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" MinWidth="0"/>
+                            <ColumnDefinition Width="*" MinWidth="0"/>
+                        </Grid.ColumnDefinitions>
+
+                        <!-- เมื่อแคบลง ตัวคั่นและชิ้นท้าย ๆ หายไปก่อน ดีกว่าปล่อยให้
+                             ข้อความสองฝั่งเลื่อนมาทับกันจนอ่านไม่ออกทั้งคู่ -->
+                        <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="10,0">
                             <TextBlock Text="{Binding StatusBarLeft}" FontSize="10.5" Foreground="{StaticResource StatusText}" FontWeight="Bold"/>
-                            <Rectangle Width="1" Height="14" Fill="{StaticResource ChromeBorderLight}" Margin="12,0"/>
-                            <TextBlock Text="{Binding StatusBarPower}" FontSize="10.5" Foreground="{StaticResource StatusText}"/>
-                            <Rectangle Width="1" Height="14" Fill="{StaticResource ChromeBorderLight}" Margin="12,0"/>
-                            <TextBlock Text="{Binding LicenseText}" FontSize="10.5" Foreground="{StaticResource StatusText}"/>
+                            <Rectangle Width="1" Height="14" Fill="{StaticResource ChromeBorderLight}" Margin="12,0"
+                                       Visibility="{Binding ActualWidth, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource WidthAtLeast}, ConverterParameter=1000}"/>
+                            <TextBlock Text="{Binding StatusBarPower}" FontSize="10.5" Foreground="{StaticResource StatusText}"
+                                       Visibility="{Binding ActualWidth, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource WidthAtLeast}, ConverterParameter=1000}"/>
+                            <Rectangle Width="1" Height="14" Fill="{StaticResource ChromeBorderLight}" Margin="12,0"
+                                       Visibility="{Binding ActualWidth, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource WidthAtLeast}, ConverterParameter=1140}"/>
+                            <TextBlock Text="{Binding LicenseText}" FontSize="10.5" Foreground="{StaticResource StatusText}"
+                                       Visibility="{Binding ActualWidth, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource WidthAtLeast}, ConverterParameter=1140}"/>
                         </StackPanel>
-                        <TextBlock Text="{Binding StatusBarRight}" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,12,0" FontSize="10.5" Foreground="{StaticResource StatusText}"/>
+
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="12,0,12,0">
+                            <!-- ขึ้นเฉพาะตอนมีอะไรเกี่ยวกับอัปเดตให้บอกจริง ๆ
+                                 ไม่ใช่ป้าย "Auto-update: on" ที่ค้างอยู่ตลอดเวลา -->
+                            <TextBlock Text="{Binding UpdateStatus}" FontSize="10.5" FontWeight="Bold"
+                                       Foreground="{StaticResource StatusText}" Margin="0,0,12,0"
+                                       TextTrimming="CharacterEllipsis" MaxWidth="320"
+                                       ToolTip="{Binding UpdateStatus}"
+                                       Visibility="{Binding UpdateStatus, Converter={StaticResource NullVis}}"/>
+                            <TextBlock Text="{Binding StatusBarRight}" FontSize="10.5" Foreground="{StaticResource StatusText}"
+                                       TextTrimming="CharacterEllipsis" ToolTip="{Binding StatusBarRight}"/>
+                        </StackPanel>
                     </Grid>
                 </Border>
             </Grid>

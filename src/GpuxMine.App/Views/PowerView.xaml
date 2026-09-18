@@ -3,9 +3,9 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <Grid>
         <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="2*" MinWidth="330"/>
             <ColumnDefinition Width="13"/>
-            <ColumnDefinition Width="308"/>
+            <ColumnDefinition Width="*" MinWidth="260" MaxWidth="360"/>
         </Grid.ColumnDefinitions>
 
         <StackPanel Grid.Column="0">
