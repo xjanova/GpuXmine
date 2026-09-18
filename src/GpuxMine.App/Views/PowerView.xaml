@@ -1,0 +1,125 @@
+<UserControl x:Class="GpuxMine.App.Views.PowerView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="13"/>
+            <ColumnDefinition Width="308"/>
+        </Grid.ColumnDefinitions>
+
+        <StackPanel Grid.Column="0">
+            <Border Style="{StaticResource ChromePanelStyle}">
+                <StackPanel>
+                    <TextBlock Text="POWER ALLOCATION" Style="{StaticResource SectionLabel}"/>
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Style="{StaticResource BigNumber}"><Run Text="{Binding PowerPercent, Mode=OneWay}"/><Run Text="%" FontSize="22"/></TextBlock>
+                        <StackPanel VerticalAlignment="Center" Margin="16,0,0,0">
+                            <TextBlock Text="{Binding ProfileName}" FontSize="13.5" FontWeight="Bold" Foreground="{StaticResource GoldAccentText}"/>
+                            <TextBlock Style="{StaticResource Mono}" FontSize="11">
+                                <Run Text="{Binding WattsEstimateText, Mode=OneWay}"/><Run Text=" · "/><Run Text="{Binding PowerCostText, Mode=OneWay}"/><Run Text="/day power"/>
+                            </TextBlock>
+                        </StackPanel>
+                    </StackPanel>
+
+                    <Slider Style="{StaticResource PowerSlider}" Minimum="20" Maximum="100" TickFrequency="5" IsSnapToTickEnabled="True"
+                            Value="{Binding PowerPercent, Mode=TwoWay}" Margin="0,10,0,4"/>
+                    <Grid Margin="4,0">
+                        <TextBlock Text="20% quiet" Style="{StaticResource Mono}" FontSize="10" HorizontalAlignment="Left"/>
+                        <TextBlock Text="50%" Style="{StaticResource Mono}" FontSize="10" HorizontalAlignment="Center" Margin="-80,0,0,0"/>
+                        <TextBlock Text="75%" Style="{StaticResource Mono}" FontSize="10" HorizontalAlignment="Center" Margin="220,0,0,0"/>
+                        <TextBlock Text="100% full" Style="{StaticResource Mono}" FontSize="10" HorizontalAlignment="Right"/>
+                    </Grid>
+
+                    <Grid Margin="0,14,0,0">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                        <Button Grid.Column="0" Style="{StaticResource ChromeButton}" Command="{Binding SetPreset}" CommandParameter="40" Padding="10,8">
+                            <StackPanel><TextBlock Text="Eco" FontWeight="Bold" FontSize="12.5" HorizontalAlignment="Center"/><TextBlock Text="40% · quiet" Style="{StaticResource Mono}" FontSize="10" HorizontalAlignment="Center"/></StackPanel>
+                        </Button>
+                        <Button Grid.Column="2" Style="{StaticResource ChromeButton}" Command="{Binding SetPreset}" CommandParameter="75" Padding="10,8">
+                            <StackPanel><TextBlock Text="Balanced" FontWeight="Bold" FontSize="12.5" HorizontalAlignment="Center"/><TextBlock Text="75% · best ฿/W" Style="{StaticResource Mono}" FontSize="10" HorizontalAlignment="Center"/></StackPanel>
+                        </Button>
+                        <Button Grid.Column="4" Style="{StaticResource ChromeButton}" Command="{Binding SetPreset}" CommandParameter="100" Padding="10,8">
+                            <StackPanel><TextBlock Text="Maximum" FontWeight="Bold" FontSize="12.5" HorizontalAlignment="Center"/><TextBlock Text="100% · loud" Style="{StaticResource Mono}" FontSize="10" HorizontalAlignment="Center"/></StackPanel>
+                        </Button>
+                    </Grid>
+
+                    <TextBlock Style="{StaticResource Muted}" Margin="0,10,0,0" FontSize="10.5"
+                               Text="เพดาน % ถูกส่งให้ pool ใช้จัดงานให้พอดี การจำกัดวัตต์ที่ระดับไดรเวอร์ต้องใช้สิทธิ์แอดมิน — มาในรุ่นถัดไป"/>
+                </StackPanel>
+            </Border>
+
+            <Border Style="{StaticResource ChromePanelStyle}" Margin="0,13,0,0">
+                <StackPanel>
+                    <CheckBox Style="{StaticResource ToggleSwitch}" IsChecked="{Binding YieldWhenActive}">
+                        <StackPanel>
+                            <TextBlock Text="Yield when I use the PC" Style="{StaticResource BodyBold}"/>
+                            <TextBlock Text="ตรวจจับเกม/โปรแกรมเต็มจอ และการใช้งาน แล้วหยุดรับงานใหม่ทันที (งานที่ค้างทำต่อจนเสร็จ)" Style="{StaticResource Muted}"/>
+                        </StackPanel>
+                    </CheckBox>
+                    <CheckBox Style="{StaticResource ToggleSwitch}" IsChecked="{Binding ScheduleOnly}" Margin="0,12,0,0">
+                        <StackPanel>
+                            <TextBlock Text="Run on schedule only" Style="{StaticResource BodyBold}"/>
+                            <TextBlock Text="รับงานเฉพาะช่วงที่ทำเครื่องหมายไว้ในตารางที่หน้า Settings" Style="{StaticResource Muted}"/>
+                        </StackPanel>
+                    </CheckBox>
+                    <StackPanel Margin="0,14,0,0">
+                        <TextBlock Style="{StaticResource BodyBold}"><Run Text="แชร์ฟรีให้ pool "/><Run Text="{Binding FreeSharePercent, Mode=OneWay}"/><Run Text="%"/></TextBlock>
+                        <TextBlock Text="ส่วนนี้ไม่ได้ค่าตอบแทน แต่เพิ่มคะแนนความร่วมมือ → ได้งานที่จ่ายเงินมากขึ้น ปรับได้ 0–100%" Style="{StaticResource Muted}"/>
+                        <Slider Style="{StaticResource PowerSlider}" Minimum="0" Maximum="100" TickFrequency="5" IsSnapToTickEnabled="True" Value="{Binding FreeSharePercent, Mode=TwoWay}" Margin="0,6,0,0"/>
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+        </StackPanel>
+
+        <StackPanel Grid.Column="2">
+            <Border Style="{StaticResource LcdPanelStyle}" Padding="14,12">
+                <StackPanel>
+                    <TextBlock Text="PROFIT CALCULATOR · AUTO" Style="{StaticResource LcdLabelText}"/>
+                    <TextBlock Style="{StaticResource LcdValue}" FontSize="34" Margin="0,4,0,8"><Run Text="{Binding NetText, Mode=OneWay}"/><Run Text=" /day net" FontSize="11"/></TextBlock>
+                    <Grid>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions><RowDefinition/><RowDefinition/><RowDefinition/><RowDefinition/></Grid.RowDefinitions>
+                        <TextBlock Grid.Row="0" Text="gross earnings" Style="{StaticResource LcdLabelText}" Typography.Capitals="Normal" Margin="0,3"/>
+                        <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding GrossText}" Style="{StaticResource LcdValueBlue}" FontSize="12"/>
+                        <TextBlock Grid.Row="1" Style="{StaticResource LcdLabelText}" Typography.Capitals="Normal" Margin="0,3"><Run Text="power @ ฿"/><Run Text="{Binding Tariff, Mode=OneWay, StringFormat={}{0:0.00}}"/><Run Text="/kWh"/></TextBlock>
+                        <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding PowerCostText}" Style="{StaticResource LcdValueBlue}" FontSize="12" Foreground="{StaticResource LcdOrange}"/>
+                        <TextBlock Grid.Row="2" Text="energy" Style="{StaticResource LcdLabelText}" Typography.Capitals="Normal" Margin="0,3"/>
+                        <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding KwhText}" Style="{StaticResource LcdValueBlue}" FontSize="12"/>
+                        <TextBlock Grid.Row="3" Text="measured draw" Style="{StaticResource LcdLabelText}" Typography.Capitals="Normal" Margin="0,3"/>
+                        <TextBlock Grid.Row="3" Grid.Column="1" Style="{StaticResource LcdValueBlue}" FontSize="12"><Run Text="{Binding PowerW, Mode=OneWay}"/><Run Text=" W"/></TextBlock>
+                    </Grid>
+                    <TextBlock Margin="0,10,0,0" Style="{StaticResource LcdLabelText}" Typography.Capitals="Normal" FontSize="9.5" Foreground="{StaticResource LcdDim}" TextWrapping="Wrap"
+                               Text="ฝั่งค่าไฟวัดจากการ์ดจริง ฝั่งรายได้จะขึ้นเมื่อ pool ตัดยอด — ไม่มีการประมาณตัวเลขเงินให้ดูสวย"/>
+                </StackPanel>
+            </Border>
+
+            <Border Style="{StaticResource ChromePanelStyle}" Margin="0,13,0,0">
+                <StackPanel>
+                    <TextBlock Text="SAFETY LIMITS" Style="{StaticResource SectionLabel}"/>
+                    <Grid Margin="0,2,0,8">
+                        <TextBlock Text="Temp ceiling" Style="{StaticResource Body}"/>
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                            <TextBox Style="{StaticResource ChromeInput}" Width="52" Padding="6,3" Text="{Binding TempCeiling, UpdateSourceTrigger=LostFocus}" TextAlignment="Right"/>
+                            <TextBlock Text=" °C" Style="{StaticResource Mono}" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Grid>
+                    <ProgressBar Style="{StaticResource Bar}" Foreground="{StaticResource OrangeFill}" Minimum="0" Maximum="100" Value="{Binding TempC, Mode=OneWay}"/>
+                    <Grid Margin="0,12,0,8">
+                        <TextBlock Text="VRAM in use" Style="{StaticResource Body}"/>
+                        <TextBlock Text="{Binding VramText}" Style="{StaticResource Mono}" HorizontalAlignment="Right"/>
+                    </Grid>
+                    <ProgressBar Style="{StaticResource Bar}" Foreground="{StaticResource GreenFill}" Minimum="0" Maximum="1" Value="{Binding VramFraction, Mode=OneWay}"/>
+                    <Grid Margin="0,12,0,8">
+                        <TextBlock Text="Upload cap" Style="{StaticResource Body}"/>
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                            <TextBox Style="{StaticResource ChromeInput}" Width="62" Padding="6,3" Text="{Binding UploadCap, UpdateSourceTrigger=LostFocus}" TextAlignment="Right"/>
+                            <TextBlock Text=" Mbps" Style="{StaticResource Mono}" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Grid>
+                    <ProgressBar Style="{StaticResource Bar}" Foreground="{StaticResource BlueFill}" Minimum="0" Maximum="100" Value="50"/>
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </Grid>
+</UserControl>

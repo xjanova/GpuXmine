@@ -12,7 +12,6 @@
     <PackageReference Include="Microsoft.Extensions.Configuration.CommandLine" Version="10.0.0" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\GpuxMine.Protocol\GpuxMine.Protocol.csproj" />
-    <ProjectReference Include="..\GpuxMine.Core\GpuxMine.Core.csproj" />
+    <ProjectReference Include="..\GpuxMine.Node\GpuxMine.Node.csproj" />
   </ItemGroup>
 </Project>

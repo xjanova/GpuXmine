@@ -4,7 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 
-namespace GpuxMine.Agent;
+namespace GpuxMine.Node;
 
 public sealed record LocalReply(int Status, Dictionary<string, string> Headers, byte[] Body)
 {
@@ -17,6 +17,12 @@ public sealed record LocalReply(int Status, Dictionary<string, string> Headers, 
     }
 }
 
+/// <summary>Why the node is not taking work this second, for the readiness answer and the UI.</summary>
+public sealed record AcceptDecision(bool Accept, string? Reason)
+{
+    public static readonly AcceptDecision Yes = new(true, null);
+}
+
 /// <summary>
 /// Everything the node does with a request that arrived down the tunnel.
 /// </summary>
@@ -25,7 +31,8 @@ public sealed record LocalReply(int Status, Dictionary<string, string> Headers, 
 /// image serves them from a Python proxy that wraps it. A community node has no
 /// such wrapper, so the agent answers them itself and forwards the rest:
 /// <list type="bullet">
-///   <item><c>/aixman/ready</c> — can this node take a job</item>
+///   <item><c>/aixman/ready</c> — can this node take a job (also where the
+///     owner's schedule and "yield when I use the PC" are enforced)</item>
 ///   <item><c>/aixman/progress</c> — how far the running render is</item>
 ///   <item><c>/aixman/log</c> — the only window into a node that misbehaves</item>
 /// </list>
@@ -43,9 +50,10 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
     /// </summary>
     private readonly string _progressClientId = Guid.NewGuid().ToString();
 
-    private readonly AgentOptions _options;
+    private readonly NodeOptions _options;
     private readonly HttpClient _http;
     private readonly ILoggerish _log;
+    private readonly Func<AcceptDecision> _acceptGate;
     private readonly CancellationTokenSource _stopping = new();
 
     private readonly Lock _stateGate = new();
@@ -53,6 +61,11 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
     private readonly Dictionary<string, Dictionary<string, string>> _graphs = new(StringComparer.Ordinal);
     private volatile bool _listening;
     private readonly List<string> _recentLog = [];
+
+    /// <summary>Raised as jobs move through the local runtime, for the history and the UI.</summary>
+    public event Action<JobEvent>? Job;
+
+    public sealed record JobEvent(string PromptId, JobStatus Status, int NodesTotal, string Kind, string? Filename, string? Error);
 
     private sealed class ProgressState
     {
@@ -68,12 +81,21 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
         public bool Failed;
     }
 
-    public ComfyRuntime(AgentOptions options, ILoggerish log)
+    /// <param name="acceptGate">
+    /// Asked on every readiness probe. Returning "no" makes the pool skip this
+    /// node for new work without disconnecting it — the running job, if any,
+    /// finishes; a customer's paid render is never killed for the owner's
+    /// convenience.
+    /// </param>
+    public ComfyRuntime(NodeOptions options, ILoggerish log, Func<AcceptDecision>? acceptGate = null)
     {
         _options = options;
         _log = log;
+        _acceptGate = acceptGate ?? (() => AcceptDecision.Yes);
         _http = new HttpClient { Timeout = TimeSpan.FromSeconds(150) };
     }
+
+    public bool Listening => _listening;
 
     // ---------------------------------------------------------------- routing
 
@@ -92,13 +114,27 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
         }
 
         if (method == "POST" && route == "/prompt")
-            body = RewritePrompt(body);
+        {
+            (body, int nodeCount, string kind) = RewritePrompt(body);
+            LocalReply reply = await ForwardAsync(method, pathAndQuery, headers, body, ct);
+            AnnounceSubmission(reply, nodeCount, kind);
+            return reply;
+        }
 
         return await ForwardAsync(method, pathAndQuery, headers, body, ct);
     }
 
     private async Task<LocalReply> ReadinessAsync(CancellationToken ct)
     {
+        AcceptDecision decision = _acceptGate();
+        if (!decision.Accept)
+        {
+            // `stage`, not `failed`: aixman reads this as "warming, check again"
+            // and keeps the worker. The owner sitting down at their PC is not a
+            // fault in the node.
+            return LocalReply.Json(503, new { ready = false, stage = "paused", reason = decision.Reason });
+        }
+
         try
         {
             using var response = await _http.GetAsync($"{_options.ComfyUrl}/system_stats", ct);
@@ -157,16 +193,16 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
     /// Points the submission's progress events at us and remembers the graph's
     /// shape, which is what turns raw sampler steps into a percentage.
     /// </summary>
-    private byte[] RewritePrompt(byte[] body)
+    private (byte[] Body, int NodeCount, string Kind) RewritePrompt(byte[] body)
     {
         try
         {
             JsonNode? root = JsonNode.Parse(body);
-            if (root is not JsonObject submitted) return body;
+            if (root is not JsonObject submitted) return (body, 0, "job");
 
+            var classes = new Dictionary<string, string>(StringComparer.Ordinal);
             if (submitted["prompt"] is JsonObject graph)
             {
-                var classes = new Dictionary<string, string>(StringComparer.Ordinal);
                 foreach (var node in graph)
                     classes[node.Key] = node.Value?["class_type"]?.GetValue<string>() ?? "";
 
@@ -179,14 +215,41 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
             }
 
             submitted["client_id"] = _progressClientId;
-            return Encoding.UTF8.GetBytes(submitted.ToJsonString());
+            return (Encoding.UTF8.GetBytes(submitted.ToJsonString()), classes.Count, KindOf(classes.Values));
         }
         catch (Exception ex)
         {
             // Forward it exactly as it came — the render still runs, only the
             // percentage goes unreported. Never fail a job over telemetry.
             Note($"could not rewrite /prompt client_id: {ex.Message}");
-            return body;
+            return (body, 0, "job");
+        }
+    }
+
+    /// <summary>A human word for the graph, from the node classes it uses. Heuristic, for the queue screen only.</summary>
+    private static string KindOf(IEnumerable<string> classes)
+    {
+        var set = classes.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (set.Any(c => c.Contains("Video", StringComparison.OrdinalIgnoreCase) || c.Contains("SVD", StringComparison.OrdinalIgnoreCase))) return "video";
+        if (set.Any(c => c.Contains("Upscale", StringComparison.OrdinalIgnoreCase) || c.Contains("ESRGAN", StringComparison.OrdinalIgnoreCase))) return "upscale";
+        if (set.Any(c => c.Contains("CLIPTextEncode", StringComparison.OrdinalIgnoreCase)) && set.Any(c => SamplerClass().IsMatch(c))) return "image";
+        if (set.Any(c => c.Contains("Audio", StringComparison.OrdinalIgnoreCase))) return "audio";
+        return "job";
+    }
+
+    private void AnnounceSubmission(LocalReply reply, int nodeCount, string kind)
+    {
+        if (reply.Status is < 200 or >= 300) return;
+        try
+        {
+            string? promptId = JsonNode.Parse(reply.Body)?["prompt_id"]?.GetValue<string>();
+            if (promptId is null) return;
+            Job?.Invoke(new JobEvent(promptId, JobStatus.Queued, nodeCount, kind, null, null));
+        }
+        catch
+        {
+            // ComfyUI answered something that is not its usual JSON; the caller
+            // already has the raw reply, and the history simply lacks this one.
         }
     }
 
@@ -240,6 +303,25 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
                 done = _state.Done,
                 failed = _state.Failed,
             };
+        }
+    }
+
+    /// <summary>0–100 for the UI, from the same numbers the pool sees.</summary>
+    public int ProgressPercent
+    {
+        get
+        {
+            lock (_stateGate)
+            {
+                if (_state.PromptId is null) return 0;
+                if (_state.Done) return 100;
+                var graph = _graphs.GetValueOrDefault(_state.PromptId);
+                int total = graph?.Count ?? 0;
+                if (total == 0) return 0;
+                double nodes = (double)_state.NodesDone / total;
+                double within = _state.Max > 0 ? (double)_state.Value / _state.Max / total : 0;
+                return (int)Math.Clamp((nodes + within) * 100, 0, 99);
+            }
         }
     }
 
@@ -306,6 +388,8 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
         JsonNode? data = root?["data"];
         if (type is null) return;
 
+        JobEvent? announce = null;
+
         lock (_stateGate)
         {
             switch (type)
@@ -328,6 +412,9 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
                         string oldest = _graphs.Keys.First(k => k != promptId && k != "");
                         _graphs.Remove(oldest);
                     }
+
+                    var g0 = _graphs.GetValueOrDefault(promptId);
+                    announce = new JobEvent(promptId, JobStatus.Running, g0?.Count ?? 0, g0 is null ? "job" : KindOf(g0.Values), null, null);
                     break;
                 }
 
@@ -352,43 +439,65 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
                         // reaches 100% reads as a hung job.
                         if (_state.ProgressNode is not null)
                         {
-                            _state.NodesDone++;
-                            var g = _state.PromptId is null ? null : _graphs.GetValueOrDefault(_state.PromptId);
-                            if (g is not null && g.TryGetValue(_state.ProgressNode, out string? lastCls) && SamplerClass().IsMatch(lastCls))
-                            {
-                                _state.SamplersDone++;
-                                _state.SamplerEnd = DateTimeOffset.UtcNow;
-                            }
+                            CountNodeDone(_state.ProgressNode);
                             _state.ProgressNode = null;
                         }
                         _state.Done = true;
                         break;
                     }
                     if (_state.ProgressNode is { } finished && finished != node)
-                    {
-                        _state.NodesDone++;
-                        var graph = _state.PromptId is null ? null : _graphs.GetValueOrDefault(_state.PromptId);
-                        if (graph is not null && graph.TryGetValue(finished, out string? cls) && SamplerClass().IsMatch(cls))
-                        {
-                            _state.SamplersDone++;
-                            _state.SamplerEnd = DateTimeOffset.UtcNow;
-                        }
-                    }
+                        CountNodeDone(finished);
                     _state.ProgressNode = node;
                     break;
                 }
 
-                case "execution_success":
-                    _state.Done = true;
+                case "executed":
+                {
+                    // Carries the output filename the moment a SaveImage node
+                    // finishes — the one thing the queue screen wants to show.
+                    string? filename = data?["output"]?["images"]?[0]?["filename"]?.GetValue<string>()
+                        ?? data?["output"]?["gifs"]?[0]?["filename"]?.GetValue<string>();
+                    if (filename is not null && _state.PromptId is not null)
+                        _lastOutput[_state.PromptId] = filename;
                     break;
+                }
+
+                case "execution_success":
+                {
+                    _state.Done = true;
+                    if (_state.PromptId is { } id)
+                        announce = new JobEvent(id, JobStatus.Completed, 0, "job", _lastOutput.GetValueOrDefault(id), null);
+                    break;
+                }
 
                 case "execution_error":
                 case "execution_interrupted":
+                {
                     _state.Done = true;
                     _state.Failed = true;
-                    Note($"render failed: {data?.ToJsonString()?[..Math.Min(300, data.ToJsonString().Length)]}");
+                    string detail = data?.ToJsonString() ?? "";
+                    Note($"render failed: {detail[..Math.Min(300, detail.Length)]}");
+                    if (_state.PromptId is { } id)
+                        announce = new JobEvent(id, JobStatus.Failed, 0, "job", null,
+                            data?["exception_message"]?.GetValue<string>() ?? type);
                     break;
+                }
             }
+        }
+
+        if (announce is not null) Job?.Invoke(announce);
+    }
+
+    private readonly Dictionary<string, string> _lastOutput = new(StringComparer.Ordinal);
+
+    private void CountNodeDone(string node)
+    {
+        _state.NodesDone++;
+        var graph = _state.PromptId is null ? null : _graphs.GetValueOrDefault(_state.PromptId);
+        if (graph is not null && graph.TryGetValue(node, out string? cls) && SamplerClass().IsMatch(cls))
+        {
+            _state.SamplersDone++;
+            _state.SamplerEnd = DateTimeOffset.UtcNow;
         }
     }
 
@@ -408,17 +517,4 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
         _http.Dispose();
         _stopping.Dispose();
     }
-}
-
-/// <summary>Minimal logging seam so the agent has no framework dependency for what is, today, console output.</summary>
-public interface ILoggerish
-{
-    void Info(string message);
-    void Warn(string message);
-}
-
-public sealed class ConsoleLog : ILoggerish
-{
-    public void Info(string message) => Console.WriteLine($"{DateTimeOffset.Now:HH:mm:ss} {message}");
-    public void Warn(string message) => Console.WriteLine($"{DateTimeOffset.Now:HH:mm:ss} WARN {message}");
 }

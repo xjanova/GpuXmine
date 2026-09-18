@@ -1,0 +1,51 @@
+<UserControl x:Class="GpuxMine.App.Views.WalletView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Grid>
+        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="13"/><ColumnDefinition Width="300"/></Grid.ColumnDefinitions>
+
+        <StackPanel Grid.Column="0">
+            <Border Style="{StaticResource LcdPanelStyle}" Padding="18,14">
+                <StackPanel>
+                    <TextBlock Text="WITHDRAWABLE BALANCE" Style="{StaticResource LcdLabelText}"/>
+                    <TextBlock Text="{Binding EarnedTodayText}" Style="{StaticResource LcdValue}" FontSize="52" Margin="0,2,0,6"/>
+                    <TextBlock Style="{StaticResource LcdLabelText}" Typography.Capitals="Normal" FontSize="10.5" TextWrapping="Wrap"
+                               Text="กระเป๋าเงินอยู่ที่ XMAN Studio — ยอด ประวัติ และการถอนทั้งหมดจัดการที่นั่น ตัวเลขจะแสดงในหน้านี้เมื่อเชื่อมบัญชี XMAN ID (M2)"/>
+                </StackPanel>
+            </Border>
+
+            <Border Style="{StaticResource ChromePanelStyle}" Margin="0,13,0,0">
+                <StackPanel>
+                    <TextBlock Text="PAYOUT HISTORY" Style="{StaticResource SectionLabel}"/>
+                    <TextBlock Style="{StaticResource Muted}" Text="ประวัติการจ่ายจะดึงจากบัญชี XMAN Studio ของคุณ — ค่าตอบแทนถูกตัดยอดเป็นก้อนรายชั่วโมงจาก ledger ของ pool ไม่ใช่ทีละงาน"/>
+                    <Button Style="{StaticResource ChromeButton}" Content="เปิดกระเป๋าเงินที่ XMAN Studio" Command="{Binding OpenUrl}" CommandParameter="{Binding WalletUrl}" HorizontalAlignment="Left" Margin="0,10,0,0"/>
+                </StackPanel>
+            </Border>
+        </StackPanel>
+
+        <StackPanel Grid.Column="2">
+            <Border Style="{StaticResource ChromePanelStyle}">
+                <StackPanel>
+                    <TextBlock Text="WITHDRAW TO" Style="{StaticResource SectionLabel}"/>
+                    <Border Background="{StaticResource Cream}" BorderBrush="{StaticResource GoldBorder}" BorderThickness="1" CornerRadius="6" Padding="12,8" Margin="0,0,0,8">
+                        <StackPanel><TextBlock Text="PromptPay / ธนาคารไทย" Style="{StaticResource BodyBold}"/><TextBlock Text="ฟรี · วันเดียวกัน · ต้องผ่าน KYC" Style="{StaticResource Mono}" FontSize="10.5"/></StackPanel>
+                    </Border>
+                    <Border Style="{StaticResource ChromePanelStyle}" Background="#fbfcfd" Padding="12,8" Margin="0,0,0,8">
+                        <StackPanel><TextBlock Text="USDT · TRC-20" Style="{StaticResource BodyBold}"/><TextBlock Text="สำหรับผู้ใช้ต่างประเทศ · ค่าธรรมเนียม 1 USDT" Style="{StaticResource Mono}" FontSize="10.5"/></StackPanel>
+                    </Border>
+                    <Border Style="{StaticResource ChromePanelStyle}" Background="#fbfcfd" Padding="12,8">
+                        <StackPanel><TextBlock Text="เก็บเป็นเครดิต" Style="{StaticResource BodyBold}"/><TextBlock Text="+5% โบนัส · ใช้จ่ายค่างาน AI ได้ทันที" Style="{StaticResource Mono}" FontSize="10.5"/></StackPanel>
+                    </Border>
+                </StackPanel>
+            </Border>
+
+            <Border Style="{StaticResource ChromePanelStyle}" Margin="0,13,0,0">
+                <StackPanel>
+                    <TextBlock Text="ยืนยันตัวตน (KYC)" Style="{StaticResource SectionLabel}"/>
+                    <TextBlock Style="{StaticResource Muted}" Text="การรับเงินต้องผ่านการยืนยันตัวตนด้วยบัตรประชาชนและบัญชีธนาคารที่ XMAN Studio หนึ่งครั้ง"/>
+                    <Button Style="{StaticResource GoldButton}" Content="ไปยืนยันตัวตน" Command="{Binding OpenUrl}" CommandParameter="{Binding KycUrl}" Margin="0,10,0,0"/>
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </Grid>
+</UserControl>

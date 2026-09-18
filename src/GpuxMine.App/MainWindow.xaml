@@ -1,0 +1,160 @@
+<Window x:Class="GpuxMine.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:c="clr-namespace:GpuxMine.App.Controls"
+        Title="GPUxMINE" Width="1194" Height="794" ResizeMode="NoResize"
+        WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        WindowStartupLocation="CenterScreen" FontFamily="{StaticResource UiFont}" TextOptions.TextFormattingMode="Display">
+
+
+    <!-- Outer chrome bezel: 7 px, radius 12 -->
+    <Border Background="{StaticResource Bezel}" CornerRadius="12" Padding="7">
+        <Border.Effect><DropShadowEffect Color="#080c12" BlurRadius="50" ShadowDepth="24" Direction="270" Opacity="0.6"/></Border.Effect>
+        <Border CornerRadius="7" BorderBrush="{StaticResource ChromeBorderDark}" BorderThickness="1" ClipToBounds="True">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="40"/>
+                    <RowDefinition Height="26"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="26"/>
+                </Grid.RowDefinitions>
+
+                <!-- ===== Title bar (gold) — drag handle ===== -->
+                <Border Grid.Row="0" Background="{StaticResource TitleGold}" BorderBrush="{StaticResource TitleBorder}" BorderThickness="0,0,0,1"
+                        MouseLeftButtonDown="TitleBar_MouseLeftButtonDown" CornerRadius="6,6,0,0">
+                    <Grid>
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="10,0,0,0">
+                            <Border Width="23" Height="23" CornerRadius="5" Background="#1b2026" BorderBrush="#5a4a18" BorderThickness="1" Margin="0,0,9,0">
+                                <Ellipse Width="9" Height="9" Fill="#ffd77a">
+                                    <Ellipse.Effect><DropShadowEffect Color="#ffbe46" BlurRadius="8" ShadowDepth="0" Opacity="0.8"/></Ellipse.Effect>
+                                </Ellipse>
+                            </Border>
+                            <!-- The wordmark is 3:1; 26 px tall gives it ~78 px to be read at, which 22 did not. -->
+                            <Image Source="/Assets/logo.png" Height="26" Margin="0,0,12,0" RenderOptions.BitmapScalingMode="HighQuality" VerticalAlignment="Center"/>
+                            <TextBlock VerticalAlignment="Center" FontSize="11" Foreground="#5d4a14">
+                                <Run Text="Worker Node — "/><Run Text="{Binding WorkerIdText, Mode=OneWay}"/><Run Text=" · v"/><Run Text="{Binding VersionText, Mode=OneWay}"/>
+                            </TextBlock>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,8,0">
+                            <Button Width="25" Height="22" Margin="3,0" Style="{StaticResource ChromeButton}" Padding="0" Click="Minimize_Click" ToolTip="ย่อ">
+                                <Rectangle Width="9" Height="2" Fill="#2c3238"/>
+                            </Button>
+                            <Button Width="25" Height="22" Margin="3,0" Style="{StaticResource ChromeButton}" Padding="0" IsEnabled="False" ToolTip="ขนาดคงที่ 1180×780">
+                                <Rectangle Width="9" Height="8" Stroke="#2c3238" StrokeThickness="1.5"/>
+                            </Button>
+                            <Button Width="25" Height="22" Margin="3,0" Padding="0" Click="Close_Click" ToolTip="ปิด">
+                                <Button.Template>
+                                    <ControlTemplate TargetType="Button">
+                                        <Border Background="{StaticResource CloseButtonFace}" BorderBrush="#7a2016" BorderThickness="1" CornerRadius="4">
+                                            <TextBlock Text="✕" Foreground="#fff5f2" FontSize="11" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                        </Border>
+                                    </ControlTemplate>
+                                </Button.Template>
+                            </Button>
+                        </StackPanel>
+                    </Grid>
+                </Border>
+
+                <!-- ===== Menu bar ===== -->
+                <Border Grid.Row="1" Background="{StaticResource MenuBar}" BorderBrush="{StaticResource ChromeBorderLight}" BorderThickness="0,0,0,1">
+                    <Grid>
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="10,0">
+                            <TextBlock Text="File" FontSize="11.5" Foreground="#33383e" Margin="0,0,16,0"/>
+                            <TextBlock Text="View" FontSize="11.5" Foreground="#33383e" Margin="0,0,16,0"/>
+                            <TextBlock Text="Node" FontSize="11.5" Foreground="#33383e" Margin="0,0,16,0"/>
+                            <TextBlock Text="Tools" FontSize="11.5" Foreground="#33383e" Margin="0,0,16,0"/>
+                            <TextBlock Text="Help" FontSize="11.5" Foreground="#33383e"/>
+                        </StackPanel>
+                        <TextBlock HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,12,0" FontSize="11" Foreground="#4b5259">
+                            <Run Text="{Binding UpdateStatus, Mode=OneWay, TargetNullValue=Auto-update: on}"/>
+                        </TextBlock>
+                    </Grid>
+                </Border>
+
+                <!-- ===== Body ===== -->
+                <Grid Grid.Row="2">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="190"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+
+                    <!-- Sidebar -->
+                    <Border Grid.Column="0" Background="{StaticResource Sidebar}" BorderBrush="{StaticResource SidebarBorder}" BorderThickness="0,0,1,0" Padding="10,12">
+                        <DockPanel LastChildFill="False">
+                            <StackPanel DockPanel.Dock="Top">
+                                <TextBlock Text="CONSOLE" FontSize="10" FontWeight="Bold" Foreground="{StaticResource InkLabel}" Margin="2,0,0,8"/>
+                                <RadioButton Style="{StaticResource NavButton}" GroupName="nav" Content="Dashboard"     IsChecked="{Binding CurrentScreen, Converter={StaticResource EqualsToBool}, ConverterParameter=dashboard, Mode=TwoWay}"/>
+                                <RadioButton Style="{StaticResource NavButton}" GroupName="nav" Content="Power &amp; Limits" IsChecked="{Binding CurrentScreen, Converter={StaticResource EqualsToBool}, ConverterParameter=power, Mode=TwoWay}"/>
+                                <RadioButton Style="{StaticResource NavButton}" GroupName="nav" Content="Models &amp; Jobs"  IsChecked="{Binding CurrentScreen, Converter={StaticResource EqualsToBool}, ConverterParameter=models, Mode=TwoWay}"/>
+                                <RadioButton Style="{StaticResource NavButton}" GroupName="nav" Content="Live Queue"    IsChecked="{Binding CurrentScreen, Converter={StaticResource EqualsToBool}, ConverterParameter=queue, Mode=TwoWay}"/>
+                                <RadioButton Style="{StaticResource NavButton}" GroupName="nav" Content="Wallet"        IsChecked="{Binding CurrentScreen, Converter={StaticResource EqualsToBool}, ConverterParameter=wallet, Mode=TwoWay}"/>
+                                <RadioButton Style="{StaticResource NavButton}" GroupName="nav" Content="Benchmark"     IsChecked="{Binding CurrentScreen, Converter={StaticResource EqualsToBool}, ConverterParameter=benchmark, Mode=TwoWay}"/>
+                                <RadioButton Style="{StaticResource NavButton}" GroupName="nav" Content="Activity Log"  IsChecked="{Binding CurrentScreen, Converter={StaticResource EqualsToBool}, ConverterParameter=log, Mode=TwoWay}"/>
+                                <RadioButton Style="{StaticResource NavButton}" GroupName="nav" Content="Referrals"     IsChecked="{Binding CurrentScreen, Converter={StaticResource EqualsToBool}, ConverterParameter=referrals, Mode=TwoWay}"/>
+                                <RadioButton Style="{StaticResource NavButton}" GroupName="nav" Content="Settings"      IsChecked="{Binding CurrentScreen, Converter={StaticResource EqualsToBool}, ConverterParameter=settings, Mode=TwoWay}"/>
+
+                                <!-- DETECTED GPU -->
+                                <Border Style="{StaticResource ChromePanelStyle}" Padding="10" Margin="0,14,0,0">
+                                    <StackPanel>
+                                        <TextBlock Text="DETECTED GPU" Style="{StaticResource SectionLabel}" Margin="0,0,0,6"/>
+                                        <TextBlock Text="{Binding GpuName}" Style="{StaticResource BodyBold}" FontSize="12"/>
+                                        <TextBlock Text="{Binding GpuDetail}" Style="{StaticResource Mono}" FontSize="10.5" Margin="0,2,0,0"/>
+                                        <TextBlock Text="{Binding DriverText}" Style="{StaticResource Mono}" FontSize="10.5"/>
+                                        <ProgressBar Style="{StaticResource Bar}" Foreground="{StaticResource GreenFill}" Height="8" Margin="0,8,0,4" Minimum="0" Maximum="1" Value="{Binding VramFraction, Mode=OneWay}"/>
+                                        <TextBlock Text="{Binding VramText}" Style="{StaticResource Mono}" FontSize="10"/>
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+
+                            <!-- POOL LINK -->
+                            <Border DockPanel.Dock="Bottom" Style="{StaticResource LcdPanelStyle}" Padding="10,8">
+                                <StackPanel>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Ellipse x:Name="PoolLed" Width="8" Height="8" Margin="0,0,7,0" VerticalAlignment="Center">
+                                            <Ellipse.Style>
+                                                <Style TargetType="Ellipse">
+                                                    <Setter Property="Fill" Value="#5c646d"/>
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding Running}" Value="True">
+                                                            <Setter Property="Fill" Value="#7fe07a"/>
+                                                            <Setter Property="Effect"><Setter.Value><DropShadowEffect Color="#7fe07a" BlurRadius="8" ShadowDepth="0" Opacity="0.9"/></Setter.Value></Setter>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </Ellipse.Style>
+                                        </Ellipse>
+                                        <TextBlock Style="{StaticResource LcdValueGreen}" FontSize="11">
+                                            <Run Text="POOL LINK · "/><Run Text="{Binding LatencyText, Mode=OneWay}"/>
+                                        </TextBlock>
+                                    </StackPanel>
+                                    <Border Height="12" Margin="0,8,0,4" Background="#0a0e12" CornerRadius="3" BorderBrush="#3a444f" BorderThickness="1"/>
+                                    <TextBlock Text="tasks in ▸ results out" Style="{StaticResource LcdLabelText}"/>
+                                </StackPanel>
+                            </Border>
+                        </DockPanel>
+                    </Border>
+
+                    <!-- Content -->
+                    <Border Grid.Column="1" Background="{StaticResource Content}" Padding="15,15,17,17">
+                        <!-- One screen at a time; the code-behind swaps them by name. -->
+                        <ContentControl x:Name="ScreenHost"/>
+                    </Border>
+                </Grid>
+
+                <!-- ===== Status bar ===== -->
+                <Border Grid.Row="3" Background="{StaticResource MenuBar}" BorderBrush="{StaticResource ChromeBorderLight}" BorderThickness="0,1,0,0" CornerRadius="0,0,6,6">
+                    <Grid>
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="10,0">
+                            <TextBlock Text="{Binding StatusBarLeft}" FontSize="10.5" Foreground="{StaticResource StatusText}" FontWeight="Bold"/>
+                            <Rectangle Width="1" Height="14" Fill="{StaticResource ChromeBorderLight}" Margin="12,0"/>
+                            <TextBlock Text="{Binding StatusBarPower}" FontSize="10.5" Foreground="{StaticResource StatusText}"/>
+                            <Rectangle Width="1" Height="14" Fill="{StaticResource ChromeBorderLight}" Margin="12,0"/>
+                            <TextBlock Text="{Binding LicenseText}" FontSize="10.5" Foreground="{StaticResource StatusText}"/>
+                        </StackPanel>
+                        <TextBlock Text="{Binding StatusBarRight}" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,12,0" FontSize="10.5" Foreground="{StaticResource StatusText}"/>
+                    </Grid>
+                </Border>
+            </Grid>
+        </Border>
+    </Border>
+</Window>

@@ -1,0 +1,203 @@
+<UserControl x:Class="GpuxMine.App.Views.DashboardView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:c="clr-namespace:GpuxMine.App.Controls">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="13"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- Row 1: status + gauges -->
+        <Grid Grid.Row="0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="13"/>
+                <ColumnDefinition Width="246"/>
+            </Grid.ColumnDefinitions>
+
+            <Border Grid.Column="0" Style="{StaticResource ChromePanelStyle}">
+                <Grid>
+                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                    <Grid Grid.Row="0" Margin="0,0,0,10">
+                        <TextBlock Text="SHARING STATUS" Style="{StaticResource SectionLabel}" Margin="0"/>
+                        <Border HorizontalAlignment="Right" Style="{StaticResource LcdPanelStyle}" Padding="10,3" CornerRadius="10">
+                            <StackPanel Orientation="Horizontal">
+                                <Ellipse Width="7" Height="7" Margin="0,0,7,0" VerticalAlignment="Center">
+                                    <Ellipse.Style>
+                                        <Style TargetType="Ellipse">
+                                            <Setter Property="Fill" Value="#5c646d"/>
+                                            <Style.Triggers><DataTrigger Binding="{Binding Accepting}" Value="True"><Setter Property="Fill" Value="#7fe07a"/></DataTrigger></Style.Triggers>
+                                        </Style>
+                                    </Ellipse.Style>
+                                </Ellipse>
+                                <TextBlock Text="{Binding ConnectionText}" Style="{StaticResource LcdValue}" FontSize="10.5"/>
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+
+                    <Grid Grid.Row="1">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="140"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+
+                        <!-- Start/stop dial -->
+                        <Button Grid.Column="0" Command="{Binding ToggleSharing}" Width="122" Height="122" Cursor="Hand" VerticalAlignment="Top" Margin="0,4,0,0">
+                            <Button.Template>
+                                <ControlTemplate TargetType="Button">
+                                    <Grid>
+                                        <Ellipse Fill="{StaticResource ChromePanel}" Stroke="{StaticResource ChromeBorder}" StrokeThickness="1">
+                                            <Ellipse.Effect><DropShadowEffect Color="#000000" BlurRadius="6" ShadowDepth="2" Direction="270" Opacity="0.3"/></Ellipse.Effect>
+                                        </Ellipse>
+                                        <Ellipse x:Name="Disc" Width="98" Height="98" Stroke="{StaticResource GoldBorder}" StrokeThickness="1">
+                                            <Ellipse.Style>
+                                                <Style TargetType="Ellipse">
+                                                    <Setter Property="Fill" Value="{StaticResource SilverDisc}"/>
+                                                    <Style.Triggers><DataTrigger Binding="{Binding Running}" Value="True"><Setter Property="Fill" Value="{StaticResource GoldButtonFace}"/></DataTrigger></Style.Triggers>
+                                                </Style>
+                                            </Ellipse.Style>
+                                        </Ellipse>
+                                        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+                                            <TextBlock Text="{Binding DialText}" FontSize="14.5" FontWeight="Bold" Foreground="{StaticResource InkOnGold}" HorizontalAlignment="Center"/>
+                                            <TextBlock Text="{Binding DialSub}" FontSize="10" Foreground="#5d4a14" HorizontalAlignment="Center"/>
+                                        </StackPanel>
+                                    </Grid>
+                                    <ControlTemplate.Triggers>
+                                        <Trigger Property="IsPressed" Value="True"><Setter TargetName="Disc" Property="Opacity" Value="0.85"/></Trigger>
+                                    </ControlTemplate.Triggers>
+                                </ControlTemplate>
+                            </Button.Template>
+                        </Button>
+
+                        <StackPanel Grid.Column="1" Margin="8,0,0,0">
+                            <!-- EARNED TODAY -->
+                            <Border Style="{StaticResource LcdPanelStyle}" Padding="14,10">
+                                <Grid>
+                                    <StackPanel>
+                                        <TextBlock Text="EARNED TODAY" Style="{StaticResource LcdLabelText}"/>
+                                        <TextBlock Text="{Binding EarnedTodayText}" Style="{StaticResource LcdValue}" FontSize="40" Margin="0,2,0,0"/>
+                                        <TextBlock Text="{Binding EarnedNote}" Style="{StaticResource LcdLabelText}" Typography.Capitals="Normal" FontSize="9.5" Foreground="{StaticResource LcdDim}"/>
+                                    </StackPanel>
+                                </Grid>
+                            </Border>
+                            <TextBlock Visibility="{Binding ShowPauseReason, Converter={StaticResource Vis}}" Margin="2,6,0,0" FontSize="11" Foreground="{StaticResource RedDark}">
+                                <Run Text="หยุดรับงานชั่วคราว — "/><Run Text="{Binding PauseReason, Mode=OneWay}"/>
+                            </TextBlock>
+                            <TextBlock Text="{Binding ConfigureHint}" Margin="2,6,0,0" FontSize="11" Foreground="{StaticResource RedDark}"/>
+                            <!-- stat tiles -->
+                            <Grid Margin="0,10,0,0">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                <Border Grid.Column="0" Style="{StaticResource ChromePanelStyle}" Padding="12,8">
+                                    <StackPanel>
+                                        <TextBlock Text="JOBS DONE TODAY" Style="{StaticResource SectionLabel}" Margin="0,0,0,2"/>
+                                        <TextBlock Style="{StaticResource Mono}" FontSize="22" Foreground="{StaticResource InkPrimary}"><Run Text="{Binding JobsTodayText, Mode=OneWay}"/><Run Text=" jobs" FontSize="11"/></TextBlock>
+                                    </StackPanel>
+                                </Border>
+                                <Border Grid.Column="2" Style="{StaticResource ChromePanelStyle}" Padding="12,8">
+                                    <StackPanel>
+                                        <TextBlock Text="UPTIME" Style="{StaticResource SectionLabel}" Margin="0,0,0,2"/>
+                                        <TextBlock Style="{StaticResource Mono}" FontSize="22" Foreground="{StaticResource InkPrimary}"><Run Text="{Binding UptimeText, Mode=OneWay}"/><Run Text=" hrs" FontSize="11"/></TextBlock>
+                                    </StackPanel>
+                                </Border>
+                            </Grid>
+                        </StackPanel>
+                    </Grid>
+                </Grid>
+            </Border>
+
+            <!-- LIVE GAUGES -->
+            <Border Grid.Column="2" Style="{StaticResource ChromePanelStyle}">
+                <StackPanel>
+                    <TextBlock Text="LIVE GAUGES" Style="{StaticResource SectionLabel}"/>
+                    <Grid Margin="0,4,0,8">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0" HorizontalAlignment="Center">
+                            <c:Gauge Width="94" Height="94" Value="{Binding LoadPct}" ArcBrush="{StaticResource GoldFill}" TextBrush="{StaticResource LcdGold}" FontSize="18">
+                                <c:Gauge.Text><MultiBinding StringFormat="{}{0}%"><Binding Path="LoadPct"/></MultiBinding></c:Gauge.Text>
+                            </c:Gauge>
+                            <TextBlock Text="GPU LOAD" Style="{StaticResource SectionLabel}" HorizontalAlignment="Center" Margin="0,6,0,0"/>
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" HorizontalAlignment="Center">
+                            <c:Gauge Width="94" Height="94" Value="{Binding TempC}" ArcBrush="{StaticResource OrangeFill}" TextBrush="{StaticResource LcdOrange}" FontSize="18">
+                                <c:Gauge.Text><MultiBinding StringFormat="{}{0}°"><Binding Path="TempC"/></MultiBinding></c:Gauge.Text>
+                            </c:Gauge>
+                            <TextBlock Text="CORE TEMP" Style="{StaticResource SectionLabel}" HorizontalAlignment="Center" Margin="0,6,0,0"/>
+                        </StackPanel>
+                    </Grid>
+                    <Grid>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions><RowDefinition/><RowDefinition/><RowDefinition/><RowDefinition/></Grid.RowDefinitions>
+                        <TextBlock Grid.Row="0" Text="POWER DRAW" Style="{StaticResource SectionLabel}" Margin="0,3"/>
+                        <TextBlock Grid.Row="0" Grid.Column="1" Style="{StaticResource Mono}" Foreground="{StaticResource GoldAccentText}"><Run Text="{Binding PowerW, Mode=OneWay}"/><Run Text=" W"/></TextBlock>
+                        <TextBlock Grid.Row="1" Text="FAN" Style="{StaticResource SectionLabel}" Margin="0,3"/>
+                        <TextBlock Grid.Row="1" Grid.Column="1" Style="{StaticResource Mono}"><Run Text="{Binding FanPct, Mode=OneWay}"/><Run Text="%"/></TextBlock>
+                        <TextBlock Grid.Row="2" Text="VRAM" Style="{StaticResource SectionLabel}" Margin="0,3"/>
+                        <TextBlock Grid.Row="2" Grid.Column="1" Style="{StaticResource Mono}" Text="{Binding VramText}"/>
+                        <TextBlock Grid.Row="3" Text="POWER COST" Style="{StaticResource SectionLabel}" Margin="0,3"/>
+                        <TextBlock Grid.Row="3" Grid.Column="1" Style="{StaticResource Mono}" Foreground="{StaticResource RedDark}"><Run Text="{Binding PowerCostText, Mode=OneWay}"/><Run Text="/day"/></TextBlock>
+                    </Grid>
+                </StackPanel>
+            </Border>
+        </Grid>
+
+        <!-- Row 2: (earnings chart needs server data) + RUNNING NOW -->
+        <Grid Grid.Row="2">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="13"/>
+                <ColumnDefinition Width="366"/>
+            </Grid.ColumnDefinitions>
+
+            <Border Grid.Column="0" Style="{StaticResource ChromePanelStyle}">
+                <Grid>
+                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                    <TextBlock Text="EARNINGS · LAST 24 H" Style="{StaticResource SectionLabel}"/>
+                    <Border Grid.Row="1" Style="{StaticResource LcdPanelStyle}" MinHeight="104">
+                        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+                            <TextBlock Text="ยังไม่มีข้อมูลการจ่ายจาก pool" Style="{StaticResource LcdLabelText}" Typography.Capitals="Normal" FontSize="11" HorizontalAlignment="Center"/>
+                            <TextBlock Text="กราฟจะขึ้นเมื่อโหนดนี้ได้รับการตัดยอดครั้งแรก (M2)" Style="{StaticResource LcdLabelText}" Typography.Capitals="Normal" FontSize="10" Foreground="{StaticResource LcdDim}" HorizontalAlignment="Center" Margin="0,4,0,0"/>
+                        </StackPanel>
+                    </Border>
+                </Grid>
+            </Border>
+
+            <Border Grid.Column="2" Style="{StaticResource ChromePanelStyle}">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Text="RUNNING NOW" Style="{StaticResource SectionLabel}"/>
+                    <Border DockPanel.Dock="Bottom" Background="{StaticResource GoldFill}" BorderBrush="{StaticResource GoldBorder}" BorderThickness="1" CornerRadius="6" Padding="12,8" Margin="0,10,0,0">
+                        <StackPanel>
+                            <TextBlock Text="AUTO MATCHING" FontSize="9.5" FontWeight="Bold" Foreground="{StaticResource InkOnGold}"/>
+                            <TextBlock FontSize="11" Foreground="{StaticResource InkOnGold}" TextWrapping="Wrap">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Text" Value="pool เลือกงานที่คุ้มและพอดีกับการ์ดให้เอง"/>
+                                        <Style.Triggers><DataTrigger Binding="{Binding AutoMatch}" Value="False"><Setter Property="Text" Value="ปิดอยู่ — รับเฉพาะชนิดงานที่เลือกใน Models &amp; Jobs"/></DataTrigger></Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                        </StackPanel>
+                    </Border>
+                    <Border Style="{StaticResource ChromePanelStyle}" Background="#fbfcfd" Padding="12,10">
+                        <StackPanel>
+                            <StackPanel Orientation="Horizontal">
+                                <Border Width="27" Height="27" CornerRadius="6" Background="{StaticResource BlueFill}" BorderBrush="#3b6a9e" BorderThickness="1" Margin="0,0,10,0"/>
+                                <StackPanel>
+                                    <TextBlock Text="{Binding CurrentJobTitle}" Style="{StaticResource BodyBold}" FontSize="12.5"/>
+                                    <TextBlock Text="{Binding CurrentJobId}" Style="{StaticResource Mono}" FontSize="10.5"/>
+                                </StackPanel>
+                            </StackPanel>
+                            <StackPanel Visibility="{Binding HasCurrentJob, Converter={StaticResource Vis}}" Margin="0,10,0,0">
+                                <ProgressBar Style="{StaticResource Bar}" Minimum="0" Maximum="100" Value="{Binding CurrentJobProgress, Mode=OneWay}"/>
+                                <TextBlock Text="{Binding CurrentJobProgressText}" Style="{StaticResource Mono}" FontSize="10.5" Margin="0,4,0,0"/>
+                            </StackPanel>
+                            <TextBlock Visibility="{Binding HasCurrentJob, Converter={StaticResource VisInv}}" Margin="0,8,0,0" Style="{StaticResource Muted}"
+                                       Text="งานจะปรากฏที่นี่ทันทีที่ pool ส่งมา"/>
+                        </StackPanel>
+                    </Border>
+                </DockPanel>
+            </Border>
+        </Grid>
+    </Grid>
+</UserControl>

@@ -1,0 +1,50 @@
+<UserControl x:Class="GpuxMine.App.Views.BenchmarkView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:c="clr-namespace:GpuxMine.App.Controls">    <Grid>
+        <Grid.ColumnDefinitions><ColumnDefinition Width="380"/><ColumnDefinition Width="13"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+
+        <StackPanel Grid.Column="0">
+            <Border Style="{StaticResource ChromePanelStyle}">
+                <StackPanel HorizontalAlignment="Center">
+                    <TextBlock Text="NODE SCORE" Style="{StaticResource SectionLabel}" HorizontalAlignment="Center"/>
+                    <c:Gauge Width="180" Height="180" Value="0" ArcBrush="{StaticResource GoldFill}" TextBrush="{StaticResource LcdGold}" FontSize="34" RingThickness="16" Text="—"/>
+                    <TextBlock Text="คะแนน tier มาจาก pool หลัง benchmark ลงทะเบียน (M5)" Style="{StaticResource Muted}" HorizontalAlignment="Center" Margin="0,10,0,0" TextAlignment="Center"/>
+                    <Button Style="{StaticResource ChromeButton}" Content="Run local smoke test" Command="{Binding RunBenchmark}" IsEnabled="{Binding BenchmarkRunning, Converter={StaticResource Not}}" Margin="0,12,0,0" Width="200"/>
+                </StackPanel>
+            </Border>
+            <Border Style="{StaticResource ChromePanelStyle}" Margin="0,13,0,0">
+                <StackPanel>
+                    <TextBlock Text="LOCAL RESULT" Style="{StaticResource SectionLabel}"/>
+                    <TextBlock Text="{Binding BenchmarkText}" Style="{StaticResource Mono}" FontSize="13" Foreground="{StaticResource InkPrimary}" TextWrapping="Wrap"/>
+                    <TextBlock Text="{Binding BenchmarkNote}" Style="{StaticResource Muted}" Margin="0,8,0,0"/>
+                </StackPanel>
+            </Border>
+        </StackPanel>
+
+        <StackPanel Grid.Column="2">
+            <Border Style="{StaticResource ChromePanelStyle}">
+                <StackPanel>
+                    <Grid Margin="0,0,0,8">
+                        <TextBlock Text="NODE RANKING" Style="{StaticResource SectionLabel}" Margin="0"/>
+                        <TextBlock Text="higher tier = first pick of jobs" Style="{StaticResource Mono}" FontSize="10" HorizontalAlignment="Right"/>
+                    </Grid>
+                    <TextBlock Style="{StaticResource Muted}" Text="อันดับเทียบกับโหนดอื่นใน pool จะแสดงเมื่อโหนดนี้ผ่าน benchmark ลงทะเบียนและมีข้อมูลจาก pool — ไม่แสดงอันดับสมมติ"/>
+                </StackPanel>
+            </Border>
+            <Border Style="{StaticResource ChromePanelStyle}" Margin="0,13,0,0">
+                <StackPanel>
+                    <TextBlock Text="SUB-SCORES · LIVE" Style="{StaticResource SectionLabel}"/>
+                    <Grid Margin="0,2,0,6"><TextBlock Text="GPU load" Style="{StaticResource Body}"/><TextBlock Style="{StaticResource Mono}" HorizontalAlignment="Right"><Run Text="{Binding LoadPct, Mode=OneWay}"/><Run Text="%"/></TextBlock></Grid>
+                    <ProgressBar Style="{StaticResource Bar}" Minimum="0" Maximum="100" Value="{Binding LoadPct, Mode=OneWay}"/>
+                    <Grid Margin="0,10,0,6"><TextBlock Text="Core temp" Style="{StaticResource Body}"/><TextBlock Style="{StaticResource Mono}" HorizontalAlignment="Right"><Run Text="{Binding TempC, Mode=OneWay}"/><Run Text=" °C"/></TextBlock></Grid>
+                    <ProgressBar Style="{StaticResource Bar}" Foreground="{StaticResource OrangeFill}" Minimum="0" Maximum="100" Value="{Binding TempC, Mode=OneWay}"/>
+                    <Grid Margin="0,10,0,6"><TextBlock Text="Session uptime" Style="{StaticResource Body}"/><TextBlock Text="{Binding UptimeText}" Style="{StaticResource Mono}" HorizontalAlignment="Right"/></Grid>
+                    <ProgressBar Style="{StaticResource Bar}" Foreground="{StaticResource GreenFill}" Minimum="0" Maximum="1" Value="{Binding SuccessRateFraction, Mode=OneWay, FallbackValue=0}"/>
+                    <Grid Margin="0,10,0,6"><TextBlock Text="Relay latency" Style="{StaticResource Body}"/><TextBlock Text="{Binding LatencyText}" Style="{StaticResource Mono}" HorizontalAlignment="Right"/></Grid>
+                    <ProgressBar Style="{StaticResource Bar}" Foreground="{StaticResource BlueFill}" Minimum="0" Maximum="1" Value="{Binding LatencyFraction, Mode=OneWay, FallbackValue=0}"/>
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </Grid>
+</UserControl>

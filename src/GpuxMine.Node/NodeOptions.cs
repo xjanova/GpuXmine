@@ -1,6 +1,6 @@
-namespace GpuxMine.Agent;
+namespace GpuxMine.Node;
 
-public sealed class AgentOptions
+public sealed class NodeOptions
 {
     /// <summary>e.g. wss://relay.gpuxmine.dev/agent</summary>
     public string RelayUrl { get; init; } = "ws://localhost:5080/agent";

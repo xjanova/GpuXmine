@@ -3,7 +3,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 
-namespace GpuxMine.Agent;
+namespace GpuxMine.Node;
 
 /// <summary>
 /// A stand-in ComfyUI, for proving the tunnel on a machine with no GPU.
@@ -57,6 +57,15 @@ public sealed class MockComfy : IDisposable
         string route = context.Request.Url?.AbsolutePath ?? "/";
         try
         {
+            if (route == "/ws" && context.Request.IsWebSocketRequest)
+            {
+                // The progress tracker dials this the way it dials real ComfyUI.
+                // Holding the socket open (and saying nothing) is enough to stop
+                // it retrying every three seconds and filling the log.
+                _ = HoldWebSocketAsync(context);
+                return;
+            }
+
             switch (route)
             {
                 case "/system_stats":
@@ -136,6 +145,24 @@ public sealed class MockComfy : IDisposable
         {
             _log.Warn($"[mock] handler failed for {route}: {ex.Message}");
             try { context.Response.Abort(); } catch { /* client already gone */ }
+        }
+    }
+
+    private static async Task HoldWebSocketAsync(HttpListenerContext context)
+    {
+        try
+        {
+            var ws = await context.AcceptWebSocketAsync(subProtocol: null);
+            var buffer = new byte[1024];
+            while (ws.WebSocket.State == System.Net.WebSockets.WebSocketState.Open)
+            {
+                var r = await ws.WebSocket.ReceiveAsync(buffer, CancellationToken.None);
+                if (r.MessageType == System.Net.WebSockets.WebSocketMessageType.Close) break;
+            }
+        }
+        catch
+        {
+            // The tracker reconnects on its own; a dropped mock socket is not news.
         }
     }
 

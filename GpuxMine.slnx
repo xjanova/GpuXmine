@@ -1,7 +1,10 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/GpuxMine.Agent/GpuxMine.Agent.csproj" />
+    <Project Path="src/GpuxMine.App/GpuxMine.App.csproj" />
     <Project Path="src/GpuxMine.Core/GpuxMine.Core.csproj" />
+    <Project Path="src/GpuxMine.Hardware/GpuxMine.Hardware.csproj" />
+    <Project Path="src/GpuxMine.Node/GpuxMine.Node.csproj" />
     <Project Path="src/GpuxMine.Protocol/GpuxMine.Protocol.csproj" />
     <Project Path="src/GpuxMine.Relay/GpuxMine.Relay.csproj" />
   </Folder>

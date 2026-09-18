@@ -1,0 +1,139 @@
+<UserControl x:Class="GpuxMine.App.Views.ModelsView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <UserControl.Resources>
+        <Style x:Key="JobRow" TargetType="Border" BasedOn="{StaticResource ChromePanelStyle}">
+            <Setter Property="Padding" Value="12,10"/>
+            <Setter Property="Margin" Value="0,0,0,8"/>
+            <Setter Property="Background" Value="#fbfcfd"/>
+        </Style>
+        <Style x:Key="GoldCheck" TargetType="CheckBox">
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="CheckBox">
+                        <Border x:Name="Box" Width="17" Height="17" CornerRadius="3" Background="{StaticResource ChromeButtonFace}" BorderBrush="{StaticResource ButtonBorder}" BorderThickness="1">
+                            <TextBlock x:Name="Mark" Text="✓" FontSize="12" FontWeight="Bold" Foreground="{StaticResource InkOnGold}" HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="Collapsed"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Box" Property="Background" Value="{StaticResource GoldFill}"/>
+                                <Setter TargetName="Box" Property="BorderBrush" Value="{StaticResource GoldBorder}"/>
+                                <Setter TargetName="Mark" Property="Visibility" Value="Visible"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False"><Setter TargetName="Box" Property="Opacity" Value="0.5"/></Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </UserControl.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="13"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+
+        <!-- Auto banner -->
+        <Border Grid.Row="0" Background="{StaticResource GoldFill}" BorderBrush="{StaticResource GoldBorder}" BorderThickness="1" CornerRadius="9" Padding="14,10">
+            <Grid>
+                <StackPanel Orientation="Horizontal">
+                    <CheckBox Style="{StaticResource ToggleSwitch}" IsChecked="{Binding AutoMatch}" VerticalAlignment="Center"/>
+                    <StackPanel VerticalAlignment="Center">
+                        <TextBlock Text="{Binding AutoMatchTitle}" FontSize="13.5" FontWeight="Bold" Foreground="{StaticResource InkOnGold}"/>
+                        <TextBlock Text="{Binding AutoMatchSub}" FontSize="11" Foreground="#5d4a14"/>
+                    </StackPanel>
+                </StackPanel>
+                <StackPanel HorizontalAlignment="Right" VerticalAlignment="Center">
+                    <TextBlock Text="BEST FIT NOW" FontSize="9.5" FontWeight="Bold" Foreground="#5d4a14" HorizontalAlignment="Right"/>
+                    <TextBlock Text="pool ยังไม่รายงานอัตรา" FontSize="11" Foreground="{StaticResource InkOnGold}" HorizontalAlignment="Right"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <Grid Grid.Row="2">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="13"/><ColumnDefinition Width="300"/></Grid.ColumnDefinitions>
+
+            <Border Grid.Column="0" Style="{StaticResource ChromePanelStyle}">
+                <StackPanel>
+                    <Grid Margin="0,0,0,10">
+                        <TextBlock Text="JOB TYPES YOU ACCEPT" Style="{StaticResource SectionLabel}" Margin="0"/>
+                        <TextBlock Text="อัตราจ่ายและ fit score มาจาก pool เมื่อเชื่อมบัญชี" Style="{StaticResource Mono}" FontSize="10" HorizontalAlignment="Right"/>
+                    </Grid>
+
+                    <Border Style="{StaticResource JobRow}">
+                        <DockPanel>
+                            <CheckBox DockPanel.Dock="Left" Style="{StaticResource GoldCheck}" IsChecked="{Binding AcceptImage}" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                            <TextBlock DockPanel.Dock="Right" Text="—" Style="{StaticResource Mono}" Foreground="{StaticResource GoldAccentText}" VerticalAlignment="Center"/>
+                            <StackPanel><TextBlock Text="Image generation — SDXL / SD 3.5 / Flux" Style="{StaticResource BodyBold}"/><TextBlock Text="needs 8–11 GB · ตรวจพบ KSampler + CLIPTextEncode ใน ComfyUI ของคุณ" Style="{StaticResource Mono}" FontSize="10.5"/></StackPanel>
+                        </DockPanel>
+                    </Border>
+                    <Border Style="{StaticResource JobRow}">
+                        <DockPanel>
+                            <CheckBox DockPanel.Dock="Left" Style="{StaticResource GoldCheck}" IsChecked="{Binding AcceptUpscale}" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                            <TextBlock DockPanel.Dock="Right" Text="—" Style="{StaticResource Mono}" Foreground="{StaticResource GoldAccentText}" VerticalAlignment="Center"/>
+                            <StackPanel><TextBlock Text="Upscale &amp; restore — Real-ESRGAN 4x" Style="{StaticResource BodyBold}"/><TextBlock Text="needs 4 GB · งานสั้น เหมาะกับช่วงแชร์ฟรี" Style="{StaticResource Mono}" FontSize="10.5"/></StackPanel>
+                        </DockPanel>
+                    </Border>
+                    <Border Style="{StaticResource JobRow}">
+                        <DockPanel>
+                            <CheckBox DockPanel.Dock="Left" Style="{StaticResource GoldCheck}" IsChecked="{Binding AcceptText}" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                            <TextBlock DockPanel.Dock="Right" Text="—" Style="{StaticResource Mono}" Foreground="{StaticResource GoldAccentText}" VerticalAlignment="Center"/>
+                            <StackPanel><TextBlock Text="Text inference — Llama 8B / Qwen 7B" Style="{StaticResource BodyBold}"/><TextBlock Text="needs 9 GB · ต้องมี llama.cpp runtime (M3)" Style="{StaticResource Mono}" FontSize="10.5"/></StackPanel>
+                        </DockPanel>
+                    </Border>
+                    <Border>
+                        <Border.Style>
+                            <Style TargetType="Border" BasedOn="{StaticResource JobRow}">
+                                <Style.Triggers>
+                                    <!-- The design renders a job the card cannot run at 72% — unselectable, not hidden. -->
+                                    <DataTrigger Binding="{Binding VideoFitsCard}" Value="False"><Setter Property="Opacity" Value="0.72"/></DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Border.Style>
+                        <DockPanel>
+                            <CheckBox DockPanel.Dock="Left" Style="{StaticResource GoldCheck}" IsChecked="{Binding AcceptVideo}" IsEnabled="{Binding VideoFitsCard}" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                            <TextBlock DockPanel.Dock="Right" Text="—" Style="{StaticResource Mono}" Foreground="{StaticResource GoldAccentText}" VerticalAlignment="Center"/>
+                            <StackPanel><TextBlock Text="Video generation — Wan / SVD / MiniMax H3" Style="{StaticResource BodyBold}"/><TextBlock Style="{StaticResource Mono}" FontSize="10.5"><Run Text="needs 16–24 GB · การ์ดนี้มี "/><Run Text="{Binding VramTotalGb, Mode=OneWay, StringFormat={}{0:0}}"/><Run Text=" GB"/></TextBlock></StackPanel>
+                        </DockPanel>
+                    </Border>
+                    <Border Style="{StaticResource JobRow}">
+                        <DockPanel>
+                            <CheckBox DockPanel.Dock="Left" Style="{StaticResource GoldCheck}" IsChecked="{Binding AcceptEmbed}" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                            <TextBlock DockPanel.Dock="Right" Text="—" Style="{StaticResource Mono}" Foreground="{StaticResource GoldAccentText}" VerticalAlignment="Center"/>
+                            <StackPanel><TextBlock Text="Embeddings &amp; vision tagging" Style="{StaticResource BodyBold}"/><TextBlock Text="needs 3 GB · ปริมาณมาก อัตราต่ำ" Style="{StaticResource Mono}" FontSize="10.5"/></StackPanel>
+                        </DockPanel>
+                    </Border>
+                </StackPanel>
+            </Border>
+
+            <StackPanel Grid.Column="2">
+                <Border Style="{StaticResource ChromePanelStyle}">
+                    <StackPanel>
+                        <TextBlock Text="MODEL CACHE" Style="{StaticResource SectionLabel}"/>
+                        <TextBlock Style="{StaticResource Muted}" Text="รายการโมเดลที่แคชไว้จะมาจาก ComfyUI ในเครื่อง (`/object_info` ระบุไฟล์ที่มี) — เชื่อมในรอบถัดไป"/>
+                    </StackPanel>
+                </Border>
+                <Border Style="{StaticResource LcdPanelStyle}" Margin="0,13,0,0" Padding="12,10">
+                    <StackPanel>
+                        <TextBlock Text="AUTO DECISION LOG" Style="{StaticResource LcdLabelText}"/>
+                        <ItemsControl ItemsSource="{Binding VisibleLog}" Margin="0,6,0,0">
+                            <ItemsControl.ItemsPanel><ItemsPanelTemplate><StackPanel/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock FontFamily="{StaticResource MonoFont}" FontSize="10.5" Foreground="{StaticResource LcdGreen}" TextWrapping="Wrap" Margin="0,1">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Visibility" Value="Collapsed"/>
+                                                <Style.Triggers><DataTrigger Binding="{Binding Channel}" Value="auto"><Setter Property="Visibility" Value="Visible"/></DataTrigger></Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                        <Run Text="> "/><Run Text="{Binding Message, Mode=OneWay}"/>
+                                    </TextBlock>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </Grid>
+    </Grid>
+</UserControl>

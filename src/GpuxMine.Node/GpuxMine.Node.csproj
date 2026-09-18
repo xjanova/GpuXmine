@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>GpuxMine.Node</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Everything a node does, with no UI and no Windows dependency: the
+         console agent, the WPF app and the Linux build all host this one
+         library. Platform-specific sensing comes in through interfaces. -->
+    <ProjectReference Include="..\GpuxMine.Protocol\GpuxMine.Protocol.csproj" />
+    <ProjectReference Include="..\GpuxMine.Core\GpuxMine.Core.csproj" />
+  </ItemGroup>
+</Project>

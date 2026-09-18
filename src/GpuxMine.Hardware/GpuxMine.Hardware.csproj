@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <RootNamespace>GpuxMine.Hardware</RootNamespace>
+    <!-- SYSLIB1054 asks for LibraryImport over DllImport. Two Win32 calls with
+         a struct ref and an enum out are exactly what DllImport handles best;
+         the source-generated form buys nothing here. -->
+    <NoWarn>$(NoWarn);SYSLIB1054</NoWarn>
+    <!-- Windows only, on purpose: this is the one project allowed to talk to
+         drivers and Win32. Everything it learns crosses into the node through
+         the interfaces in GpuxMine.Node, so a Linux host can bring its own. -->
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.6" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\GpuxMine.Node\GpuxMine.Node.csproj" />
+  </ItemGroup>
+</Project>

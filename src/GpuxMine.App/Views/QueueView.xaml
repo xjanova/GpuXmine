@@ -1,0 +1,82 @@
+<UserControl x:Class="GpuxMine.App.Views.QueueView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Grid>
+        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="13"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+
+        <Border Grid.Row="0" Style="{StaticResource LcdPanelStyle}" Padding="16,10">
+            <Grid>
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0"><TextBlock Text="THROUGHPUT" Style="{StaticResource LcdLabelText}"/><TextBlock Text="{Binding ThroughputText}" Style="{StaticResource LcdValueBlue}" FontSize="20"/></StackPanel>
+                <StackPanel Grid.Column="1"><TextBlock Text="SUCCESS RATE" Style="{StaticResource LcdLabelText}"/><TextBlock Text="{Binding SuccessRateText}" Style="{StaticResource LcdValueGreen}" FontSize="20"/></StackPanel>
+                <StackPanel Grid.Column="2"><TextBlock Text="PAID THIS SESSION" Style="{StaticResource LcdLabelText}"/><TextBlock Text="{Binding PaidSessionText}" Style="{StaticResource LcdValue}" FontSize="20"/></StackPanel>
+                <StackPanel Grid.Column="3"><TextBlock Text="JOBS TODAY" Style="{StaticResource LcdLabelText}"/><TextBlock Style="{StaticResource LcdValueBlue}" FontSize="20"><Run Text="{Binding JobsTodayText, Mode=OneWay}"/><Run Text=" ok · " FontSize="11"/><Run Text="{Binding FailedTodayText, Mode=OneWay}"/><Run Text=" failed" FontSize="11"/></TextBlock></StackPanel>
+            </Grid>
+        </Border>
+
+        <Border Grid.Row="2" Style="{StaticResource ChromePanelStyle}" Padding="0">
+            <DockPanel>
+                <Border DockPanel.Dock="Top" Background="{StaticResource MenuBar}" BorderBrush="{StaticResource ChromeBorderLight}" BorderThickness="0,0,0,1" Height="30" CornerRadius="9,9,0,0" Padding="14,0">
+                    <Grid VerticalAlignment="Center">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="110"/><ColumnDefinition Width="120"/><ColumnDefinition Width="*"/><ColumnDefinition Width="90"/><ColumnDefinition Width="80"/><ColumnDefinition Width="90"/><ColumnDefinition Width="90"/></Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="JOB ID" Style="{StaticResource SectionLabel}" Margin="0"/>
+                        <TextBlock Grid.Column="1" Text="TASK" Style="{StaticResource SectionLabel}" Margin="0"/>
+                        <TextBlock Grid.Column="2" Text="OUTPUT" Style="{StaticResource SectionLabel}" Margin="0"/>
+                        <TextBlock Grid.Column="3" Text="TIME" Style="{StaticResource SectionLabel}" Margin="0"/>
+                        <TextBlock Grid.Column="4" Text="DURATION" Style="{StaticResource SectionLabel}" Margin="0"/>
+                        <TextBlock Grid.Column="5" Text="PAYOUT" Style="{StaticResource SectionLabel}" Margin="0"/>
+                        <TextBlock Grid.Column="6" Text="STATUS" Style="{StaticResource SectionLabel}" Margin="0"/>
+                    </Grid>
+                </Border>
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <ItemsControl ItemsSource="{Binding JobRows}" AlternationCount="2">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border Padding="14,0" Height="34">
+                                    <Border.Style>
+                                        <Style TargetType="Border">
+                                            <Setter Property="Background" Value="#fbfcfd"/>
+                                            <Style.Triggers>
+                                                <!-- AlternationIndex sits on the item container, one level up from this Border. -->
+                                                <DataTrigger Binding="{Binding Path=(ItemsControl.AlternationIndex), RelativeSource={RelativeSource AncestorType=ContentPresenter}}" Value="1"><Setter Property="Background" Value="#f6f8fa"/></DataTrigger>
+                                                <DataTrigger Binding="{Binding IsRunning}" Value="True"><Setter Property="Background" Value="{StaticResource Cream}"/><Setter Property="Height" Value="42"/></DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Border.Style>
+                                    <Grid VerticalAlignment="Center">
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="110"/><ColumnDefinition Width="120"/><ColumnDefinition Width="*"/><ColumnDefinition Width="90"/><ColumnDefinition Width="80"/><ColumnDefinition Width="90"/><ColumnDefinition Width="90"/></Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="{Binding Id}" Style="{StaticResource Mono}"/>
+                                        <TextBlock Grid.Column="1" Text="{Binding Task}" Style="{StaticResource Body}"/>
+                                        <TextBlock Grid.Column="2" FontSize="10.5" TextTrimming="CharacterEllipsis">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock" BasedOn="{StaticResource Mono}">
+                                                    <Setter Property="Text" Value="{Binding Output}"/>
+                                                    <Style.Triggers><DataTrigger Binding="{Binding IsFailed}" Value="True"><Setter Property="Text" Value="{Binding Error}"/><Setter Property="Foreground" Value="{StaticResource RedDark}"/></DataTrigger></Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                        <TextBlock Grid.Column="3" Text="{Binding When}" Style="{StaticResource Mono}"/>
+                                        <TextBlock Grid.Column="4" Text="{Binding Duration}" Style="{StaticResource Mono}"/>
+                                        <TextBlock Grid.Column="5" Text="{Binding Payout}" Style="{StaticResource Mono}" Foreground="{StaticResource GoldAccentText}"/>
+                                        <TextBlock Grid.Column="6" Text="{Binding Status}" FontSize="10.5" FontWeight="Bold">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Foreground" Value="{StaticResource InkLabel}"/>
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding Status}" Value="DONE"><Setter Property="Foreground" Value="{StaticResource Green}"/></DataTrigger>
+                                                        <DataTrigger Binding="{Binding Status}" Value="RUNNING"><Setter Property="Foreground" Value="{StaticResource GoldAccentText}"/></DataTrigger>
+                                                        <DataTrigger Binding="{Binding Status}" Value="FAILED"><Setter Property="Foreground" Value="{StaticResource RedDark}"/></DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+            </DockPanel>
+        </Border>
+    </Grid>
+</UserControl>

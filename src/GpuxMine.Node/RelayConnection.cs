@@ -1,15 +1,22 @@
 using System.Net.WebSockets;
 using GpuxMine.Protocol;
 
-namespace GpuxMine.Agent;
+namespace GpuxMine.Node;
 
 /// <summary>
 /// The node's one connection to the outside world: dialled out, never listened
 /// for. That is the whole reason this project can work on a home PC behind
 /// CGNAT without asking its owner to forward a port.
 /// </summary>
-public sealed class RelayConnection(AgentOptions options, ComfyRuntime runtime, ILoggerish log)
+public sealed class RelayConnection(
+    NodeOptions options,
+    ComfyRuntime runtime,
+    ILoggerish log,
+    Func<AgentTelemetry>? telemetry = null)
 {
+    /// <summary>Fires on connect and disconnect so a host can show the state without polling.</summary>
+    public event Action<bool>? ConnectedChanged;
+
     private static readonly string AgentVersion =
         typeof(RelayConnection).Assembly.GetName().Version?.ToString(3) ?? "0.1.0";
 
@@ -56,7 +63,8 @@ public sealed class RelayConnection(AgentOptions options, ComfyRuntime runtime, 
         socket.Options.KeepAliveInterval = TimeSpan.FromSeconds(20);
 
         await socket.ConnectAsync(new Uri(options.RelayUrl), ct);
-        log.Info($"connected to relay as {options.WorkerId}");
+        log.Info($"[net] connected to relay as {options.WorkerId}");
+        ConnectedChanged?.Invoke(true);
 
         using var session = CancellationTokenSource.CreateLinkedTokenSource(ct);
 
@@ -88,7 +96,8 @@ public sealed class RelayConnection(AgentOptions options, ComfyRuntime runtime, 
                 }
                 catch { /* going away regardless */ }
             }
-            log.Info("relay session ended");
+            log.Info("[net] relay session ended");
+            ConnectedChanged?.Invoke(false);
         }
     }
 
@@ -195,13 +204,15 @@ public sealed class RelayConnection(AgentOptions options, ComfyRuntime runtime, 
         {
             try
             {
+                // Whatever the host can measure. A host with no sensing sends
+                // zeros — honest, where plausible-looking numbers would put
+                // fiction on the pool's dashboards.
+                AgentTelemetry payload = telemetry?.Invoke() ?? new AgentTelemetry { Accepting = true };
+
                 await SendAsync(socket, new TunnelHeader
                 {
                     Kind = FrameKind.Heartbeat,
-                    // Real GPU numbers arrive in M3 with LibreHardwareMonitor.
-                    // Reporting zeroes is honest; inventing plausible ones would
-                    // put fiction on the pool's dashboards from day one.
-                    Telemetry = new AgentTelemetry { Accepting = true, FreeSharePct = 0 },
+                    Telemetry = payload,
                 }, ReadOnlyMemory<byte>.Empty, ct);
             }
             catch (OperationCanceledException)

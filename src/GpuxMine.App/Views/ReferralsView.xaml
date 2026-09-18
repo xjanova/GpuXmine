@@ -1,0 +1,35 @@
+<UserControl x:Class="GpuxMine.App.Views.ReferralsView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Grid>
+        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="13"/><ColumnDefinition Width="270"/></Grid.ColumnDefinitions>
+        <StackPanel Grid.Column="0">
+            <Border Style="{StaticResource ChromePanelStyle}">
+                <StackPanel>
+                    <TextBlock Text="YOUR INVITE CODE" Style="{StaticResource SectionLabel}"/>
+                    <Grid>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                        <Border Style="{StaticResource LcdPanelStyle}" Padding="14,8">
+                            <TextBlock Text="เชื่อมบัญชี XMAN ID เพื่อรับโค้ด" Style="{StaticResource LcdValue}" FontSize="16" Effect="{x:Null}"/>
+                        </Border>
+                        <Button Grid.Column="1" Style="{StaticResource GoldButton}" Content="เปิดหน้าแนะนำเพื่อน" Command="{Binding OpenUrl}" CommandParameter="{Binding ReferralUrl}" Margin="10,0,0,0" VerticalAlignment="Center"/>
+                    </Grid>
+                    <TextBlock Style="{StaticResource Muted}" Margin="0,10,0,0" Text="รับ 5% ของรายได้ผู้ที่คุณเชิญ นาน 12 เดือน · ผู้ถูกเชิญได้ ฿100 หลังทำงานครบ 100 งาน · งานที่แชร์ฟรีไม่นับเป็นรายได้ จึงไม่มีค่าแนะนำจากงานนั้น"/>
+                </StackPanel>
+            </Border>
+            <Border Style="{StaticResource ChromePanelStyle}" Margin="0,13,0,0">
+                <StackPanel>
+                    <TextBlock Text="YOUR NETWORK" Style="{StaticResource SectionLabel}"/>
+                    <TextBlock Style="{StaticResource Muted}" Text="ผังสายงานและรายได้ของแต่ละคนอยู่ที่ XMAN Studio — จะแสดงในหน้านี้เมื่อเชื่อมบัญชี ไม่มีการแสดงรายชื่อสมมติ"/>
+                </StackPanel>
+            </Border>
+        </StackPanel>
+        <Border Grid.Column="2" Style="{StaticResource LcdPanelStyle}" Padding="14,12" VerticalAlignment="Top">
+            <StackPanel>
+                <TextBlock Text="REFERRAL EARNINGS" Style="{StaticResource LcdLabelText}"/>
+                <TextBlock Text="—" Style="{StaticResource LcdValue}" FontSize="40" Margin="0,2,0,4"/>
+                <TextBlock Text="this month · จ่ายรวมกับค่าตอบแทนปกติ" Style="{StaticResource LcdLabelText}" Typography.Capitals="Normal"/>
+            </StackPanel>
+        </Border>
+    </Grid>
+</UserControl>
