@@ -42,8 +42,19 @@ body เป็นไบต์ดิบ **ไม่ใช้ base64** — รู�
 |---|---|
 | `GpuxMine.Protocol` | สัญญาข้อมูลที่ไคลเอนต์กับ relay **ใช้ร่วมกัน** — เป็นโค้ดชุดเดียวจึงเพี้ยนกันไม่ได้ |
 | `GpuxMine.Core` | ตัวตนเครื่อง · ไลเซนส์/ทะเบียนเครื่อง · อัปเดตตัวเอง (ไม่ผูก Windows) |
+| `GpuxMine.Node` | **ทุกอย่างที่โหนดทำ** — ตั้งค่า, ตัดสินใจรับงาน, รันไทม์ ComfyUI, เซสชัน relay — ไม่มี UI ไม่ผูก Windows |
+| `GpuxMine.Hardware` | อ่านค่าการ์ดจอผ่าน LibreHardwareMonitor + ตรวจว่าเจ้าของกำลังใช้เครื่อง (Windows) |
 | `GpuxMine.Relay` | ASP.NET Core — รับ WebSocket จาก agent, เปิดผิว HTTP ให้แพลตฟอร์ม, ตรวจ token |
-| `GpuxMine.Agent` | ตัวลูกบนเครื่องผู้ใช้ — ต่อออกหา relay, ส่งงานเข้า ComfyUI, รายงานความคืบหน้า |
+| `GpuxMine.Agent` | ตัวลูกแบบ console/headless — ห่อ `NodeHost` บาง ๆ สำหรับริกที่ไม่มีหน้าจอ |
+| `GpuxMine.App` | ตัวลูกแบบหน้าต่าง (WPF) — 9 หน้าตามดีไซน์ ผูกกับ `NodeHost` ตัวเดียวกัน |
+
+### กติกาที่ทำให้ต่อยอดง่าย
+
+`GpuxMine.App` **ไม่มี business logic** — มันอ่าน `NodeState` แล้ววาด · ทุกอย่างที่ตัดสินใจอยู่ใน `GpuxMine.Node` · Windows แตะได้เฉพาะ `GpuxMine.Hardware` ผ่าน interface สองตัว (`ITelemetrySource`, `IUserActivitySource`) — วันที่ต้องการ Linux หรือ Avalonia จะเปลี่ยนแค่โปรเจกต์เดียว
+
+### สิ่งที่หน้าจอบอกและไม่บอก
+
+ตัวเลขทุกตัวบนหน้าจอ**วัดจากเครื่องนี้**หรือ**pool รายงานมา** — ไม่มีการประมาณเป็นตัวเงิน ตรงไหนที่ pool ยังไม่ส่งข้อมูล (รายได้ การจ่าย อันดับ) หน้าจอแสดง "—" พร้อมบอกว่าทำไม ตัวเลข ฿187.42 ในดีไซน์ต้นแบบเป็นแค่ตัวอย่าง และตัวอย่างที่ดูเหมือนยอดเงินจริงคือวิธีที่ผลิตภัณฑ์ได้คำว่า "หลอกลวง" มาติดตัว
 
 `.NET 10` · Windows และ Linux (ริกขุดที่ว่างอยู่ใช้ได้ ไม่ต้องมีหน้าจอ)
 
@@ -73,13 +84,25 @@ curl -s -X POST -H "X-Admin-Key: devkey" "http://127.0.0.1:5080/enroll?label=my-
 python main.py --listen 127.0.0.1 --port 8188
 ```
 
-**4. agent**
+**4. ตัวลูก — เลือกอย่างใดอย่างหนึ่ง**
+
+หน้าต่าง (Windows):
+
+```bash
+dotnet run --project src/GpuxMine.App -- \
+  --WorkerId gxm-xxxxxxxxxxxx --Token "<token>" \
+  --RelayUrl ws://127.0.0.1:5080/agent --ComfyUrl http://127.0.0.1:8188
+```
+
+headless (Windows/Linux ริกไม่มีจอ):
 
 ```bash
 dotnet run --project src/GpuxMine.Agent -- \
   --WorkerId gxm-xxxxxxxxxxxx --Token "<token>" \
   --RelayUrl ws://127.0.0.1:5080/agent --ComfyUrl http://127.0.0.1:8188
 ```
+
+`--identity` พิมพ์ตัวตนเครื่องที่ XMAN Studio จะเห็นแล้วออก — สิ่งแรกที่ฝ่ายซัพพอร์ตถาม
 
 ไม่มี GPU ก็ลองท่อได้ด้วย `--Mock true` (ComfyUI จำลองในโปรเซสเดียวกัน)
 
