@@ -8,7 +8,7 @@ using System.Windows.Threading;
 using GpuxMine.Core;
 using GpuxMine.Core.Updates;
 using GpuxMine.Node;
-using Microsoft.Win32;
+
 
 namespace GpuxMine.App.ViewModels;
 
@@ -44,7 +44,7 @@ public sealed class MainViewModel : ObservableObject
         _offPeakStart = s.OffPeakStartHour;
         _offPeakEnd = s.OffPeakEndHour;
         _offPeakRate = s.OffPeakRatePerKwh;
-        _startWithWindows = s.StartWithWindows;
+        _startWithWindows = Shell.DesktopIntegration.IsAutostartEnabled();
         _notifications = s.Notifications;
         _anonymous = s.LeaderboardAnonymous;
         _tempCeiling = s.TempCeilingC;
@@ -208,6 +208,9 @@ public sealed class MainViewModel : ObservableObject
             CurrentJobId = ""; CurrentJobProgress = 0; CurrentJobProgressText = "";
         }
 
+        RefreshAssessment();
+        RaiseAssessment();
+
         // Profit calculator: only the half we can measure. Gross needs the pool.
         KwhPerDay = PowerW > 0 ? PowerW / 1000.0 * 24 : 0;
         PowerCostPerDay = (decimal)KwhPerDay * EffectiveTariff();
@@ -335,27 +338,7 @@ public sealed class MainViewModel : ObservableObject
     }
 
     private void ApplyAutostart(bool on)
-    {
-        try
-        {
-            using var run = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", writable: true);
-            if (run is null) return;
-            if (on)
-            {
-                string exe = Environment.ProcessPath ?? "";
-                if (exe.Length > 0) run.SetValue("GPUxMINE", $"\"{exe}\" --minimized");
-            }
-            else
-            {
-                run.DeleteValue("GPUxMINE", throwOnMissingValue: false);
-            }
-            _host.Log.Info(on ? "[cfg] start with Windows: on" : "[cfg] start with Windows: off");
-        }
-        catch (Exception ex)
-        {
-            _host.Log.Warn($"[cfg] could not change autostart: {ex.Message}");
-        }
-    }
+        => Shell.DesktopIntegration.SetAutostart(on, on ? _host.Log.Info : _host.Log.Info);
 
     // ------------------------------------------------------------ schedule
 
@@ -518,53 +501,124 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
+    // ---------------------------------------------------- machine assessment
+
+    /// <summary>
+    /// The Benchmark screen is the capability assessment, not a toy timer.
+    /// </summary>
+    /// <remarks>
+    /// It used to run a 3-node graph and print a number that meant nothing to
+    /// anyone: the pool never saw it, and the screen said so in its own caption.
+    /// The node now has to pass a real assessment before it may receive any
+    /// work, so this is where the owner sees the verdict — and, when a kind of
+    /// job is refused, exactly why.
+    /// </remarks>
     public RelayCommand RunBenchmark { get; }
-    public string BenchmarkText { get; private set; } = "ยังไม่ได้รัน";
-    public string BenchmarkNote => "การทดสอบนี้วัดเวลาที่ ComfyUI ในเครื่องรันกราฟทดสอบ 3 โหนด — ไม่ใช่คะแนน tier ของ pool (M5)";
+
     public bool BenchmarkRunning { get; private set; }
+    public int AssessmentScore { get; private set; }
+    public string AssessmentScoreText { get; private set; } = "—";
+    public string AssessmentTier { get; private set; } = "ยังไม่ประเมิน";
+    public string BenchmarkText { get; private set; } = "ยังไม่ได้ประเมินเครื่อง";
+    public string BenchmarkNote { get; private set; } =
+        "เครื่องต้องผ่านการประเมินก่อนจึงจะได้รับงาน — ระบบประเมินให้เองเมื่อ ComfyUI พร้อม และประเมินใหม่เมื่อเปลี่ยนการ์ดจอ เปลี่ยนเวอร์ชัน หรือผลเกิน 30 วัน";
+
+    /// <summary>Gauge scale: a reference card sits at 1000, so the dial is read against that.</summary>
+    public double AssessmentGaugeValue => Math.Clamp(AssessmentScore / 20.0, 0, 100);
+
+    public ObservableCollection<CapabilityRow> Capabilities { get; } = [];
+
+    public sealed class CapabilityRow(GpuxMine.Node.Assessment.Capability c)
+    {
+        public string Kind { get; } = c.Kind switch
+        {
+            "image" => "สร้างภาพ",
+            "video" => "สร้างวิดีโอ",
+            "upscale" => "ขยายภาพ",
+            "embed" => "ประมวลผลข้อความ",
+            _ => c.Kind,
+        };
+        public bool CanRun { get; } = c.CanRun;
+        public string Verdict { get; } = c.CanRun ? "รับงานได้" : "รับไม่ได้";
+        public string Detail { get; } = c.CanRun
+            ? $"ประมาณ {c.SecondsPerUnit:0.#} วินาที/ชิ้น"
+            : c.Reason ?? "";
+    }
+
+    private GpuxMine.Node.Assessment.NodeAssessment? _shownAssessment;
+
+    private void RefreshAssessment()
+    {
+        var report = _host.State.Assessment;
+        BenchmarkRunning = _host.State.Assessing;
+
+        if (BenchmarkRunning && _shownAssessment is null)
+        {
+            BenchmarkText = "กำลังประเมินเครื่อง…";
+            AssessmentTier = "กำลังวัด";
+        }
+
+        // Rebuild only when the report itself changed: this runs every 1.4 s,
+        // and clearing an ObservableCollection on every tick makes the list
+        // flicker for no reason.
+        if (ReferenceEquals(report, _shownAssessment)) return;
+        _shownAssessment = report;
+
+        Capabilities.Clear();
+        if (report is null)
+        {
+            AssessmentScore = 0;
+            AssessmentScoreText = "—";
+            AssessmentTier = "ยังไม่ประเมิน";
+            BenchmarkText = "ยังไม่ได้ประเมินเครื่อง";
+            return;
+        }
+
+        foreach (var capability in report.Capabilities)
+            Capabilities.Add(new CapabilityRow(capability));
+
+        if (report.Failed is not null)
+        {
+            AssessmentScore = 0;
+            AssessmentScoreText = "—";
+            AssessmentTier = "ประเมินไม่ผ่าน";
+            BenchmarkText = report.Failed;
+            return;
+        }
+
+        AssessmentScore = report.Score;
+        AssessmentScoreText = report.Score.ToString("N0");
+        AssessmentTier = report.Tier.ToUpperInvariant();
+        BenchmarkText =
+            $"{report.GpuName ?? "GPU"} · VRAM {report.VramTotalMb / 1024.0:0.#} GB\n" +
+            $"งานอ้างอิง {report.ReferenceSeconds:0.00} วินาที (เครื่องอ้างอิง {GpuxMine.Node.Assessment.Assessor.ReferenceBaselineSeconds:0.0} วินาที)\n" +
+            $"โมเดลในเครื่อง: checkpoint {report.Checkpoints.Count} · upscaler {report.Upscalers.Count} · diffusion {report.DiffusionModels.Count}\n" +
+            $"วัดเมื่อ {report.MeasuredAt.ToLocalTime():yyyy-MM-dd HH:mm}";
+    }
 
     private async Task RunBenchmarkAsync()
     {
         if (BenchmarkRunning) return;
-        BenchmarkRunning = true; Raise(nameof(BenchmarkRunning));
-        BenchmarkText = "กำลังรัน…"; Raise(nameof(BenchmarkText));
         try
         {
-            string baseUrl = _host.Options.ComfyUrl.TrimEnd('/');
-            const string graph = """
-                {"prompt":{"1":{"class_type":"EmptyImage","inputs":{"width":1024,"height":1024,"batch_size":1,"color":8421504}},
-                "2":{"class_type":"ImageScale","inputs":{"image":["1",0],"upscale_method":"bicubic","width":2048,"height":2048,"crop":"disabled"}},
-                "3":{"class_type":"SaveImage","inputs":{"images":["2",0],"filename_prefix":"gpuxmine_bench"}}},"client_id":"bench"}
-                """;
-            var sw = Stopwatch.StartNew();
-            using var submit = await _http.PostAsync($"{baseUrl}/prompt", new StringContent(graph, Encoding.UTF8, "application/json"));
-            string body = await submit.Content.ReadAsStringAsync();
-            if (!submit.IsSuccessStatusCode) { BenchmarkText = $"ComfyUI ปฏิเสธ: HTTP {(int)submit.StatusCode}"; return; }
-            string? id = System.Text.Json.JsonDocument.Parse(body).RootElement.GetProperty("prompt_id").GetString();
-
-            for (int i = 0; i < 120 && id is not null; i++)
-            {
-                await Task.Delay(500);
-                using var h = await _http.GetAsync($"{baseUrl}/history/{id}");
-                string hs = await h.Content.ReadAsStringAsync();
-                if (hs.Contains("\"completed\": true") || hs.Contains("\"completed\":true"))
-                {
-                    BenchmarkText = $"{sw.Elapsed.TotalSeconds:0.00} s สำหรับกราฟทดสอบ (1024² → 2048² bicubic)";
-                    _host.Log.Info($"[gpu] benchmark: {sw.Elapsed.TotalSeconds:0.00}s");
-                    return;
-                }
-                if (hs.Contains("\"status_str\": \"error\"")) { BenchmarkText = "กราฟทดสอบล้มเหลวใน ComfyUI"; return; }
-            }
-            BenchmarkText = "หมดเวลารอ ComfyUI";
+            await _host.RunAssessmentAsync();
         }
         catch (Exception ex)
         {
-            BenchmarkText = $"รันไม่ได้: {ex.Message}";
+            BenchmarkText = $"ประเมินไม่สำเร็จ: {ex.Message}";
         }
         finally
         {
-            BenchmarkRunning = false; Raise(nameof(BenchmarkRunning)); Raise(nameof(BenchmarkText));
+            RefreshAssessment();
+            RaiseAssessment();
         }
+    }
+
+    private void RaiseAssessment()
+    {
+        Raise(nameof(BenchmarkRunning)); Raise(nameof(BenchmarkText)); Raise(nameof(BenchmarkNote));
+        Raise(nameof(AssessmentScore)); Raise(nameof(AssessmentScoreText));
+        Raise(nameof(AssessmentTier)); Raise(nameof(AssessmentGaugeValue));
     }
 
     // ------------------------------------------------------------ links

@@ -48,6 +48,12 @@ public sealed class NodeState
     /// <summary>The pool's view of this node, once it has one. Null = no server data yet.</summary>
     public decimal? EarnedTodayThb { get; private set; }
 
+    /// <summary>The capability report. Null means this machine has never passed one, and gets no work.</summary>
+    public Assessment.NodeAssessment? Assessment { get; private set; }
+
+    /// <summary>True while the benchmark is running — the card is busy with it, so no job is taken.</summary>
+    public bool Assessing { get; private set; }
+
     public TimeSpan Uptime => SessionStartedAt is { } s ? DateTimeOffset.Now - s : TimeSpan.Zero;
 
     // --- mutation, only from the host --------------------------------------
@@ -73,4 +79,6 @@ public sealed class NodeState
     internal void SetLicense(LicenseState l) => Set(s => s.License = l);
     internal void SetUpdateStatus(string? text) => Set(s => s.UpdateStatus = text);
     internal void SetEarnedToday(decimal? thb) => Set(s => s.EarnedTodayThb = thb);
+    internal void SetAssessment(Assessment.NodeAssessment? a) => Set(s => s.Assessment = a);
+    internal void SetAssessing(bool busy) => Set(s => s.Assessing = busy);
 }

@@ -56,6 +56,17 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
     private readonly Func<AcceptDecision> _acceptGate;
     private readonly CancellationTokenSource _stopping = new();
 
+    /// <summary>
+    /// The machine's capability report, or the reason it has none yet.
+    /// </summary>
+    /// <remarks>
+    /// Set by the host. Until it answers with a report, every readiness probe
+    /// is refused: a machine that has not been measured is never sent work,
+    /// because the alternative is discovering a card's limits on a customer's
+    /// paid job.
+    /// </remarks>
+    public Func<(Assessment.NodeAssessment? Report, string? Reason)>? AssessmentSource { get; set; }
+
     private readonly Lock _stateGate = new();
     private ProgressState _state = new();
     private readonly Dictionary<string, Dictionary<string, string>> _graphs = new(StringComparer.Ordinal);
@@ -126,6 +137,18 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
 
     private async Task<LocalReply> ReadinessAsync(CancellationToken ct)
     {
+        // Assessment before everything else. A paused node is one that will be
+        // back in a minute; an unassessed one must not be dispatched to at all,
+        // however willing it says it is.
+        Assessment.NodeAssessment? report = null;
+        if (AssessmentSource is { } askAssessment)
+        {
+            string? why;
+            (report, why) = askAssessment();
+            if (report is null)
+                return LocalReply.Json(503, new { ready = false, stage = "unassessed", reason = why });
+        }
+
         AcceptDecision decision = _acceptGate();
         if (!decision.Accept)
         {
@@ -144,7 +167,25 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
             // `auth: true` tells aixman the bearer token is being enforced. It is —
             // by the relay, before this request was ever put on the tunnel. Saying
             // false here would trip a SECURITY error on a node that is in fact gated.
-            return LocalReply.Json(200, new { ready = true, auth = true, listening = _listening });
+            // The capability block travels with it so the dispatcher can pick a
+            // job this card was measured able to finish, rather than any job at all.
+            return LocalReply.Json(200, new
+            {
+                ready = true,
+                auth = true,
+                listening = _listening,
+                assessment = report is null ? null : new
+                {
+                    score = report.Score,
+                    tier = report.Tier,
+                    gpu = report.GpuName,
+                    vram_mb = report.VramTotalMb,
+                    measured_at = report.MeasuredAt,
+                    can_run = report.Capabilities.Where(c => c.CanRun).Select(c => c.Kind).ToArray(),
+                    seconds_per_unit = report.Capabilities.Where(c => c.CanRun)
+                        .ToDictionary(c => c.Kind, c => c.SecondsPerUnit),
+                },
+            });
         }
         catch (Exception ex)
         {

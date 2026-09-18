@@ -308,6 +308,57 @@ public sealed class NodeStore : IDisposable
             reader.IsDBNull(2) ? null : reader.GetInt64(2) / 100m);
     }
 
+    /// <summary>
+    /// The median wall-clock seconds this machine actually took for a kind of
+    /// job, or null when it has not done enough of them to say.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is the assessment's best input, and it is free: every job's start
+    /// and finish are already recorded. A synthetic benchmark can only predict;
+    /// these rows are what the machine did, on the models it really has, with
+    /// whatever else its owner runs on it.
+    /// </para>
+    /// <para>
+    /// Median and not mean, because one job that ran while the owner was
+    /// playing a game would drag an average far enough to make the node look
+    /// unusable. Only completed jobs count — a failure's duration says nothing
+    /// about how long the work takes.
+    /// </para>
+    /// </remarks>
+    public double? MedianJobSeconds(string kind, int minSamples = 3, int window = 25)
+    {
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT (completed_at - started_at) / 1000.0 AS secs
+              FROM jobs
+             WHERE kind = $kind
+               AND status = 'completed'
+               AND started_at IS NOT NULL
+               AND completed_at IS NOT NULL
+               AND completed_at > started_at
+             ORDER BY completed_at DESC
+             LIMIT $window
+            """;
+        command.Parameters.AddWithValue("$kind", kind);
+        command.Parameters.AddWithValue("$window", window);
+
+        var samples = new List<double>();
+        using (var reader = command.ExecuteReader())
+        {
+            while (reader.Read()) samples.Add(reader.GetDouble(0));
+        }
+
+        if (samples.Count < minSamples) return null;
+
+        samples.Sort();
+        int middle = samples.Count / 2;
+        return samples.Count % 2 == 1
+            ? samples[middle]
+            : (samples[middle - 1] + samples[middle]) / 2;
+    }
+
     // ------------------------------------------------------------- log
 
     public void AppendLog(DateTimeOffset at, string channel, LogLevel level, string message)

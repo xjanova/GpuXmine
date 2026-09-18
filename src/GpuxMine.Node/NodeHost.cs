@@ -1,6 +1,12 @@
+using GpuxMine.Core;
 using GpuxMine.Core.Licensing;
 using GpuxMine.Core.Updates;
+using GpuxMine.Node.Assessment;
 using GpuxMine.Protocol;
+
+// The host exposes an `Assessment` property, which would otherwise shadow the
+// namespace of the same name inside this file.
+using AssessmentReport = GpuxMine.Node.Assessment.NodeAssessment;
 
 namespace GpuxMine.Node;
 
@@ -49,8 +55,22 @@ public sealed class NodeHost : IAsyncDisposable
     private MockComfy? _mock;
     private DateTimeOffset _lastUserInput = DateTimeOffset.MinValue;
 
+    private readonly SemaphoreSlim _assessGate = new(1, 1);
+    private volatile bool _assessing;
+
+    // Asked on every heartbeat and every readiness probe, and the first call
+    // costs a process spawn on Windows and a file read on Linux. It cannot
+    // change while the process lives, so it is computed once.
+    private readonly Lazy<string> _hardwareHash = new(MachineIdentity.HardwareHash, LazyThreadSafetyMode.ExecutionAndPublication);
+
     /// <summary>Set once an update is staged and the node is idle; the host applies it on shutdown.</summary>
     public bool UpdatePending { get; private set; }
+
+    /// <summary>
+    /// What this machine was measured able to do. Null until it passes an
+    /// assessment, and no work is dispatched to it while it is null.
+    /// </summary>
+    public AssessmentReport? Assessment { get; private set; }
 
     public NodeHost(
         NodeOptions options,
@@ -71,6 +91,7 @@ public sealed class NodeHost : IAsyncDisposable
 
         Runtime = new ComfyRuntime(options, Log, Decide);
         Runtime.Job += OnJobEvent;
+        Runtime.AssessmentSource = AssessmentForDispatch;
 
         _studio = new XmanStudioClient(_http, options.XmanStudioUrl);
         Updater = new SelfUpdater(options.UpdateRepo, options.DataDirectory, Log.Warn);
@@ -91,6 +112,7 @@ public sealed class NodeHost : IAsyncDisposable
         }
 
         _background.Add(Guard(Runtime.TrackProgressAsync(_hostCts.Token), "progress tracker"));
+        _background.Add(Guard(AssessLoopAsync(_hostCts.Token), "machine assessment"));
         _background.Add(Guard(SenseLoopAsync(_hostCts.Token), "sensing"));
         _background.Add(Guard(StudioLoopAsync(_hostCts.Token), "xman studio"));
         _background.Add(Guard(SweepLoopAsync(_hostCts.Token), "database sweep"));
@@ -167,6 +189,16 @@ public sealed class NodeHost : IAsyncDisposable
     {
         if (!State.Running) return new AcceptDecision(false, "หยุดแชร์อยู่");
 
+        // The benchmark has the card. Taking a job on top of it would both slow
+        // the render and measure the machine as slower than it is.
+        if (_assessing) return new AcceptDecision(false, "กำลังประเมินเครื่อง");
+
+        // The readiness gate refuses an unassessed node on its own, but it has
+        // to be said here too — otherwise the owner's screen reads "ACCEPTING"
+        // while the pool is being told 503, and the node looks broken to the
+        // one person who could fix it.
+        if (AssessmentForDispatch() is { Report: null, Reason: { } why }) return new AcceptDecision(false, why);
+
         if (Settings.ScheduleOnly && !Settings.IsScheduledNow(DateTime.Now))
             return new AcceptDecision(false, "นอกตารางเวลาแชร์");
 
@@ -201,6 +233,8 @@ public sealed class NodeHost : IAsyncDisposable
     private AgentTelemetry HeartbeatPayload()
     {
         var g = State.Gpu;
+        var (report, _) = AssessmentForDispatch();
+
         return new AgentTelemetry
         {
             GpuName = g.GpuName,
@@ -211,7 +245,114 @@ public sealed class NodeHost : IAsyncDisposable
             PowerW = g.PowerW,
             Accepting = State.Accepting,
             FreeSharePct = Settings.FreeSharePercent,
+
+            // What the back office lists this machine by. `Assessed` is the
+            // dispatchable flag, not "has ever been measured": a stale or failed
+            // report reads as false here exactly as it does at the readiness gate.
+            Assessed = report is not null,
+            Score = report?.Score ?? 0,
+            Tier = report?.Tier ?? Assessment?.Tier ?? "unrated",
+            CanRun = report?.Capabilities.Where(c => c.CanRun).Select(c => c.Kind).ToArray() ?? [],
+            Host = MachineIdentity.MachineName(),
         };
+    }
+
+    // ------------------------------------------------------------- assessment
+
+    /// <summary>The report the dispatcher may act on, or why there is none.</summary>
+    private (AssessmentReport? Report, string? Reason) AssessmentForDispatch()
+    {
+        var report = Assessment;
+
+        if (_assessing && report is null) return (null, "กำลังประเมินเครื่องครั้งแรก");
+        if (report is null) return (null, "ยังไม่ได้ประเมินเครื่อง");
+        if (report.Failed is not null) return (null, $"ประเมินเครื่องไม่ผ่าน: {report.Failed}");
+        if (!report.IsUsable(SelfUpdater.CurrentVersion, _hardwareHash.Value))
+            return (null, "ผลประเมินหมดอายุหรือฮาร์ดแวร์เปลี่ยน — กำลังประเมินใหม่");
+
+        // Measured, and measured as not able to do anything we dispatch. Saying
+        // "ready" here would hand it a job it is certain to fail or to finish so
+        // late the customer has given up.
+        if (!report.Capabilities.Any(c => c.CanRun))
+            return (null, "เครื่องนี้ยังทำงานประเภทใดไม่ได้ — ดูหน้าประเมินเครื่อง");
+
+        return (report, null);
+    }
+
+    /// <summary>
+    /// Keeps a valid capability report on file, and re-measures when there is not one.
+    /// </summary>
+    /// <remarks>
+    /// Re-measurement is not a nicety: the report goes stale after a month, is
+    /// tied to the agent build that took it, and is void if the hardware hash
+    /// changes — which is what catches a card being swapped under an enrolled
+    /// node, or a report copied onto a slower PC.
+    /// </remarks>
+    private async Task AssessLoopAsync(CancellationToken ct)
+    {
+        Assessment = Assessor.Load(Store);
+        State.SetAssessment(Assessment);
+        if (Assessment is not null) Log.Info($"[gpu] ผลประเมินเดิม: {Assessment.Summary()}");
+
+        // ComfyUI needs a moment after launch, and the first probe asks it to
+        // render — there is nothing to gain by racing it.
+        try { await Task.Delay(TimeSpan.FromSeconds(8), ct); } catch (OperationCanceledException) { return; }
+
+        while (!ct.IsCancellationRequested)
+        {
+            var (report, reason) = AssessmentForDispatch();
+
+            // Never benchmark on top of a customer's render: it would steal the
+            // card from work somebody is paying for, and mismeasure this machine.
+            if (report is null && !Runtime.IsBusy)
+            {
+                Log.Info($"[gpu] ต้องประเมินเครื่องก่อนรับงาน — {reason}");
+                await RunAssessmentAsync(ct);
+            }
+
+            // Re-check often while there is no usable report (a node in this
+            // state earns nothing), and lazily once there is one.
+            TimeSpan wait = AssessmentForDispatch().Report is null
+                ? TimeSpan.FromMinutes(3)
+                : TimeSpan.FromHours(6);
+            try { await Task.Delay(wait, ct); } catch (OperationCanceledException) { return; }
+        }
+    }
+
+    /// <summary>Measures this machine. Safe to call from the UI — only one runs at a time.</summary>
+    public async Task<AssessmentReport> RunAssessmentAsync(CancellationToken ct = default)
+    {
+        await _assessGate.WaitAsync(ct);
+        try
+        {
+            _assessing = true;
+            State.SetAssessing(true);
+            Reevaluate();
+            Log.Info("[gpu] กำลังประเมินเครื่อง — วัดความเร็วการ์ดจอด้วยงานมาตรฐาน");
+
+            using var assessor = new Assessor(Options, Log, Store);
+            AssessmentReport report = await assessor.RunAsync(
+                SelfUpdater.CurrentVersion, _hardwareHash.Value, State.Gpu.Driver, ct);
+
+            Assessment = report;
+            State.SetAssessment(report);
+
+            try { Assessor.Save(Store, report); }
+            catch (Exception ex) { Log.Warn($"[gpu] could not store the assessment: {ex.Message}"); }
+
+            Log.Info($"[gpu] {report.Summary()}");
+            foreach (var capability in report.Capabilities.Where(c => !c.CanRun))
+                Log.Info($"[gpu] งาน {capability.Kind}: รับไม่ได้ — {capability.Reason}");
+
+            return report;
+        }
+        finally
+        {
+            _assessing = false;
+            State.SetAssessing(false);
+            Reevaluate();
+            _assessGate.Release();
+        }
     }
 
     // ------------------------------------------------------------- loops
@@ -455,6 +596,7 @@ public sealed class NodeHost : IAsyncDisposable
         _mock?.Dispose();
         _telemetry.Dispose();
         _http.Dispose();
+        _assessGate.Dispose();
         _hostCts.Dispose();
         Log.Info("[cfg] node stopped");   // last write before the store closes
         Store.Dispose();

@@ -117,4 +117,29 @@ public sealed class AgentTelemetry
     /// <summary>Share of capacity the owner is donating right now, 0-100.</summary>
     [JsonPropertyName("freeSharePct")]
     public int FreeSharePct { get; set; }
+
+    // --- capability assessment -------------------------------------------
+    // A node may not be sent work until it has been measured. These four
+    // fields are what the back office lists a machine by, and what the pool
+    // filters on before a job is ever offered.
+
+    /// <summary>False until the node has passed a capability assessment. No work is dispatched to it while false.</summary>
+    [JsonPropertyName("assessed")]
+    public bool Assessed { get; set; }
+
+    /// <summary>Measured capability score: 1000 on the reference card, halving as the card halves in speed.</summary>
+    [JsonPropertyName("score")]
+    public int Score { get; set; }
+
+    /// <summary>platinum · gold · silver · bronze · basic — or unrated before the first assessment.</summary>
+    [JsonPropertyName("tier")]
+    public string? Tier { get; set; }
+
+    /// <summary>Kinds of work this machine was measured able to do, e.g. ["image","upscale"].</summary>
+    [JsonPropertyName("canRun")]
+    public string[]? CanRun { get; set; }
+
+    /// <summary>The machine's own name, so the back office lists rigs the way their owner talks about them.</summary>
+    [JsonPropertyName("host")]
+    public string? Host { get; set; }
 }

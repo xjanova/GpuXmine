@@ -8,16 +8,22 @@
             <Border Style="{StaticResource ChromePanelStyle}">
                 <StackPanel HorizontalAlignment="Center">
                     <TextBlock Text="NODE SCORE" Style="{StaticResource SectionLabel}" HorizontalAlignment="Center"/>
-                    <c:Gauge Width="180" Height="180" Value="0" ArcBrush="{StaticResource GoldFill}" TextBrush="{StaticResource LcdGold}" FontSize="34" RingThickness="16" Text="—"/>
-                    <TextBlock Text="คะแนน tier มาจาก pool หลัง benchmark ลงทะเบียน (M5)" Style="{StaticResource Muted}" HorizontalAlignment="Center" Margin="0,10,0,0" TextAlignment="Center"/>
-                    <Button Style="{StaticResource ChromeButton}" Content="Run local smoke test" Command="{Binding RunBenchmark}" IsEnabled="{Binding BenchmarkRunning, Converter={StaticResource Not}}" Margin="0,12,0,0" Width="200"/>
+                    <c:Gauge Width="180" Height="180" Value="{Binding AssessmentGaugeValue, Mode=OneWay}"
+                             ArcBrush="{StaticResource GoldFill}" TextBrush="{StaticResource LcdGold}"
+                             FontSize="34" RingThickness="16" Text="{Binding AssessmentScoreText}"/>
+                    <TextBlock Text="{Binding AssessmentTier}" Style="{StaticResource Mono}" FontSize="15"
+                               Foreground="{StaticResource InkPrimary}" HorizontalAlignment="Center" Margin="0,6,0,0"/>
+                    <TextBlock Text="1000 = เครื่องอ้างอิง · คะแนนครึ่งหนึ่งเมื่อการ์ดช้าลงครึ่งหนึ่ง"
+                               Style="{StaticResource Muted}" HorizontalAlignment="Center" Margin="0,8,0,0" TextAlignment="Center"/>
+                    <Button Style="{StaticResource ChromeButton}" Content="ประเมินเครื่องใหม่" Command="{Binding RunBenchmark}"
+                            IsEnabled="{Binding BenchmarkRunning, Converter={StaticResource Not}}" Margin="0,12,0,0" Width="200"/>
                 </StackPanel>
             </Border>
             <Border Style="{StaticResource ChromePanelStyle}" Margin="0,13,0,0">
                 <StackPanel>
-                    <TextBlock Text="LOCAL RESULT" Style="{StaticResource SectionLabel}"/>
+                    <TextBlock Text="ผลการประเมิน" Style="{StaticResource SectionLabel}"/>
                     <TextBlock Text="{Binding BenchmarkText}" Style="{StaticResource Mono}" FontSize="13" Foreground="{StaticResource InkPrimary}" TextWrapping="Wrap"/>
-                    <TextBlock Text="{Binding BenchmarkNote}" Style="{StaticResource Muted}" Margin="0,8,0,0"/>
+                    <TextBlock Text="{Binding BenchmarkNote}" Style="{StaticResource Muted}" Margin="0,8,0,0" TextWrapping="Wrap"/>
                 </StackPanel>
             </Border>
         </StackPanel>
@@ -26,12 +32,43 @@
             <Border Style="{StaticResource ChromePanelStyle}">
                 <StackPanel>
                     <Grid Margin="0,0,0,8">
-                        <TextBlock Text="NODE RANKING" Style="{StaticResource SectionLabel}" Margin="0"/>
-                        <TextBlock Text="higher tier = first pick of jobs" Style="{StaticResource Mono}" FontSize="10" HorizontalAlignment="Right"/>
+                        <TextBlock Text="งานที่เครื่องนี้รับได้" Style="{StaticResource SectionLabel}" Margin="0"/>
+                        <TextBlock Text="วัดจริง ไม่ใช่การประกาศเอง" Style="{StaticResource Mono}" FontSize="10" HorizontalAlignment="Right"/>
                     </Grid>
-                    <TextBlock Style="{StaticResource Muted}" Text="อันดับเทียบกับโหนดอื่นใน pool จะแสดงเมื่อโหนดนี้ผ่าน benchmark ลงทะเบียนและมีข้อมูลจาก pool — ไม่แสดงอันดับสมมติ"/>
+
+                    <ItemsControl ItemsSource="{Binding Capabilities}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Grid Margin="0,5">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="150"/>
+                                        <ColumnDefinition Width="90"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="{Binding Kind}" Style="{StaticResource Body}"/>
+                                    <TextBlock Grid.Column="1" Text="{Binding Verdict}" FontSize="11">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock" BasedOn="{StaticResource Mono}">
+                                                <Setter Property="Foreground" Value="#8a2f2f"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding CanRun}" Value="True">
+                                                        <Setter Property="Foreground" Value="#1f6b3a"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                    <TextBlock Grid.Column="2" Text="{Binding Detail}" Style="{StaticResource Muted}" TextWrapping="Wrap"/>
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <TextBlock Style="{StaticResource Muted}" Margin="0,10,0,0" TextWrapping="Wrap"
+                               Text="ระบบจะไม่ส่งงานประเภทที่เครื่องนี้ทำไม่ไหวมาให้ — ทั้งเพราะ VRAM ไม่พอ ไม่มีโมเดลที่ต้องใช้ หรือช้ากว่าเครื่องอ้างอิงมากเกินไปจนลูกค้ารอไม่ไหว"/>
                 </StackPanel>
             </Border>
+
             <Border Style="{StaticResource ChromePanelStyle}" Margin="0,13,0,0">
                 <StackPanel>
                     <TextBlock Text="SUB-SCORES · LIVE" Style="{StaticResource SectionLabel}"/>

@@ -1,7 +1,7 @@
 name: build-and-release
 
 # Tag a commit `v1.2.3` and everything downstream follows on its own:
-#   GitHub Release  →  Velopack feed  →  installed agents update themselves
+#   GitHub Release  →  Velopack feed  →  installed clients update themselves
 #                   →  XMAN Studio's product sync picks the release up within
 #                      10 minutes and the website serves the new download.
 #
@@ -21,6 +21,12 @@ on:
 
 permissions:
   contents: write
+
+env:
+  # Must match the Velopack package reference in GpuxMine.Core.csproj. A vpk
+  # that is newer than the library writes a feed the installed client cannot
+  # read, and the only symptom is a fleet that quietly stops updating.
+  VPK_VERSION: '0.0.1298'
 
 jobs:
   release:
@@ -57,14 +63,27 @@ jobs:
           dotnet build -c Release -p:Version=${{ steps.version.outputs.version }} --nologo
           dotnet test -c Release --no-build --nologo
 
-      - name: Publish agent
+      # The Windows client — the thing a node owner actually installs, and the
+      # only artifact in the self-update path.
+      - name: Publish client (win-x64)
+        shell: pwsh
+        run: |
+          dotnet publish src/GpuxMine.App/GpuxMine.App.csproj `
+            -c Release -r win-x64 --self-contained true `
+            -p:Version=${{ steps.version.outputs.version }} `
+            -p:PublishSingleFile=false `
+            -o publish/client
+
+      # Headless, for a rig with no desktop session. Shipped as a zip: it is
+      # not in the Velopack feed, and updates by being replaced.
+      - name: Publish agent (win-x64, headless)
         shell: pwsh
         run: |
           dotnet publish src/GpuxMine.Agent/GpuxMine.Agent.csproj `
             -c Release -r win-x64 --self-contained true `
             -p:Version=${{ steps.version.outputs.version }} `
-            -p:PublishSingleFile=false `
-            -o publish/agent
+            -o publish/agent-win
+          Compress-Archive -Path publish/agent-win/* -DestinationPath gpuxmine-agent-win-x64.zip
 
       # Linux rigs are a large slice of the supply (mining boxes idle since the
       # merge), and the agent is headless by design — no UI project is involved.
@@ -86,17 +105,19 @@ jobs:
             -o publish/relay
           Compress-Archive -Path publish/relay/* -DestinationPath gpuxmine-relay-linux-x64.zip
 
-      - name: Pack with Velopack
+      - name: Pack the client with Velopack
         shell: pwsh
         run: |
-          dotnet tool install -g vpk
+          dotnet tool install -g vpk --version $env:VPK_VERSION
           vpk pack `
             --packId GpuxMine `
             --packVersion ${{ steps.version.outputs.version }} `
-            --packDir publish/agent `
-            --mainExe gpuxmine-agent.exe `
-            --packTitle "GPUxMINE Worker" `
-            --packAuthors "XMAN Studio"
+            --packDir publish/client `
+            --mainExe GPUxMINE.exe `
+            --packTitle "GPUxMINE" `
+            --packAuthors "XMAN Studio" `
+            --icon src/GpuxMine.App/Assets/gpuxmine.ico
+          Get-ChildItem Releases | Format-Table Name, Length
 
       - name: Release
         uses: softprops/action-gh-release@v2
@@ -109,5 +130,6 @@ jobs:
           # node, and nobody finds out until someone checks a version by hand.
           files: |
             Releases/*
+            gpuxmine-agent-win-x64.zip
             gpuxmine-agent-linux-x64.zip
             gpuxmine-relay-linux-x64.zip
