@@ -3,8 +3,12 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
+    <!-- NotifyIcon lives in Windows Forms; WPF has no tray icon of its own and
+         a worker that runs for days needs to live somewhere other than a window. -->
+    <UseWindowsForms>true</UseWindowsForms>
     <RootNamespace>GpuxMine.App</RootNamespace>
     <AssemblyName>GPUxMINE</AssemblyName>
+    <ApplicationIcon>Assets\gpuxmine.ico</ApplicationIcon>
     <!-- Directory.Build.props sets InvariantGlobalization for the headless
          projects. WPF's font cache constructs real cultures at startup and
          throws under invariant mode before a single window opens — found by
@@ -15,6 +19,13 @@
          The day a Linux or Avalonia head is wanted, this is the only project
          that changes. -->
   </PropertyGroup>
+  <ItemGroup>
+    <!-- UseWindowsForms adds these to the implicit usings, and every one of
+         them collides with its WPF namesake: Application, Brush, Point, Color.
+         Only the tray icon needs Windows Forms, and it imports them by name. -->
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\GpuxMine.Node\GpuxMine.Node.csproj" />
     <ProjectReference Include="..\GpuxMine.Hardware\GpuxMine.Hardware.csproj" />
@@ -30,5 +41,6 @@
     <Resource Include="Assets\Fonts\ShareTechMono-Regular.ttf" />
     <Resource Include="Assets\logo.png" />
     <Resource Include="Assets\icon.png" />
+    <Resource Include="Assets\gpuxmine.ico" />
   </ItemGroup>
 </Project>

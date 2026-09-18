@@ -1,5 +1,6 @@
 using System.IO;
 using System.Windows;
+using GpuxMine.App.Shell;
 using GpuxMine.App.ViewModels;
 using GpuxMine.Core.Updates;
 using GpuxMine.Hardware;
@@ -12,6 +13,7 @@ public partial class App : Application
 {
     private NodeHost? _host;
     private MainViewModel? _vm;
+    private TrayIcon? _tray;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -41,9 +43,24 @@ public partial class App : Application
         _vm = new MainViewModel(_host, Dispatcher);
         _host.Begin();
 
+        // Findable again after the first run, whether the node was installed or
+        // just unzipped somewhere.
+        DesktopIntegration.EnsureStartMenuShortcut(_host.Log.Info);
+
         var window = new MainWindow { DataContext = _vm };
         MainWindow = window;
-        window.Show();
+
+        // The tray is the node's real home; the window is a visit to it.
+        // ShutdownMode is OnExplicitShutdown so closing the window — or
+        // starting minimised, where no window is ever shown — does not end a
+        // process that is in the middle of earning.
+        _tray = new TrayIcon(_host, window);
+
+        bool minimised = e.Args.Any(a => a.Equals("--minimized", StringComparison.OrdinalIgnoreCase));
+        if (!minimised) window.Show();
+
+        // Autostart implies the owner wants it earning, not just running.
+        if (minimised && options.Validate(out _)) _ = _host.StartAsync();
 
         DispatcherUnhandledException += (_, args) =>
         {
@@ -64,6 +81,9 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        _tray?.Dispose();
+        _tray = null;
+
         var host = _host;
         _host = null;
         if (host is not null)

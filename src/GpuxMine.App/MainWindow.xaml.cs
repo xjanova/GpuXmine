@@ -53,5 +53,19 @@ public partial class MainWindow : Window
 
     private void Minimize_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
 
-    private void Close_Click(object sender, RoutedEventArgs e) => Close();
+    /// <summary>
+    /// Closing the window hides it; the node keeps earning in the tray.
+    /// </summary>
+    /// <remarks>
+    /// The owner closed a window. They did not decide to stop sharing their
+    /// card, and a worker that stops the moment its window is dismissed is a
+    /// worker that quietly earns nothing. Quitting for real is on the tray menu.
+    /// </remarks>
+    private void Close_Click(object sender, RoutedEventArgs e) => Hide();
+
+    protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
+    {
+        e.Cancel = true;
+        Hide();
+    }
 }
