@@ -242,8 +242,12 @@ public sealed class NodeHost : IAsyncDisposable
 
         return new AgentTelemetry
         {
-            GpuName = g.GpuName,
-            VramTotalMb = g.VramTotalMb,
+            // The assessment is the fallback, not an extra: a headless rig has
+            // no sensor source wired, and the back office was listing those
+            // machines with no card and no VRAM at all. torch told us both
+            // during the assessment — there is no reason to show nothing.
+            GpuName = g.GpuName ?? report?.GpuName ?? Assessment?.GpuName,
+            VramTotalMb = g.VramTotalMb > 0 ? g.VramTotalMb : Assessment?.VramTotalMb ?? 0,
             VramUsedMb = g.VramUsedMb,
             GpuLoadPct = g.LoadPct,
             TempC = g.TempC,
