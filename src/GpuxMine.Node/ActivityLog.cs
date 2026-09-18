@@ -1,3 +1,5 @@
+using GpuxMine.Node.Storage;
+
 namespace GpuxMine.Node;
 
 public enum LogLevel { Info, Warn }
@@ -19,25 +21,18 @@ public sealed class ConsoleLog : ILoggerish
 
 /// <summary>
 /// The node's own memory of what it did — the Activity Log screen, and what
-/// the owner pastes into a support ticket.
+/// the owner attaches to a support ticket.
 /// </summary>
 /// <remarks>
-/// A bounded ring: a node that runs for months would otherwise hold every line
-/// it ever wrote. Messages that start with <c>[channel]</c> are filed under
-/// that channel, which is how the log screen colours and filters them.
+/// Backed by SQLite, not a ring buffer in RAM. The buffer held 2,000 lines and
+/// lost all of them on restart, so the one question support actually asks —
+/// "what happened last Tuesday when it stopped earning?" — had no answer.
+/// Messages that start with <c>[channel]</c> are filed under that channel,
+/// which is how the log screen colours and filters them.
 /// </remarks>
-public sealed class ActivityLog : ILoggerish
+public sealed class ActivityLog(NodeStore store, ILoggerish? also = null) : ILoggerish
 {
-    public const int Capacity = 2000;
-
-    private readonly Lock _gate = new();
-    private readonly LinkedList<LogEntry> _entries = new();
-    private readonly ILoggerish? _also;
-
     public event Action<LogEntry>? EntryAdded;
-
-    /// <param name="also">A second sink, e.g. the console when running headless.</param>
-    public ActivityLog(ILoggerish? also = null) => _also = also;
 
     public void Info(string message) => Add(message, LogLevel.Info);
     public void Warn(string message) => Add(message, LogLevel.Warn);
@@ -47,29 +42,34 @@ public sealed class ActivityLog : ILoggerish
         (string ch, string text) = channel is null ? Split(message) : (channel, message);
         var entry = new LogEntry(DateTimeOffset.Now, ch, text, level);
 
-        lock (_gate)
+        try
         {
-            _entries.AddLast(entry);
-            while (_entries.Count > Capacity) _entries.RemoveFirst();
+            store.AppendLog(entry.At, ch, level, text);
+        }
+        catch (Exception ex)
+        {
+            // Losing a log line must never take down the thing being logged.
+            also?.Warn($"[warn] could not write log: {ex.Message}");
         }
 
-        if (level == LogLevel.Warn) _also?.Warn(message); else _also?.Info(message);
+        if (level == LogLevel.Warn) also?.Warn(message); else also?.Info(message);
         EntryAdded?.Invoke(entry);
     }
 
-    public IReadOnlyList<LogEntry> Snapshot()
-    {
-        lock (_gate) return _entries.ToList();
-    }
+    public IReadOnlyList<LogEntry> Snapshot(int limit = 500) => store.RecentLog(limit);
 
-    public string Export()
+    /// <param name="filter">all · jobs · payouts · warnings — the Activity Log screen's four buttons.</param>
+    public IReadOnlyList<LogEntry> Filtered(string filter, int limit = 500) => filter switch
     {
-        lock (_gate)
-        {
-            return string.Join('\n', _entries.Select(e =>
-                $"{e.At:yyyy-MM-dd HH:mm:ss} [{e.Channel}] {(e.Level == LogLevel.Warn ? "WARN " : "")}{e.Message}"));
-        }
-    }
+        "jobs" => store.RecentLog(limit, """["job","auto","comfy"]"""),
+        "payouts" => store.RecentLog(limit, """["pay"]"""),
+        "warnings" => store.RecentLog(limit, warningsOnly: true),
+        _ => store.RecentLog(limit),
+    };
+
+    public string Export(int limit = 20_000)
+        => string.Join('\n', store.RecentLog(limit).Select(e =>
+            $"{e.At:yyyy-MM-dd HH:mm:ss} [{e.Channel}] {(e.Level == LogLevel.Warn ? "WARN " : "")}{e.Message}"));
 
     private static (string Channel, string Text) Split(string message)
     {

@@ -112,21 +112,27 @@ public sealed class NodeSettings
 
     // --- persistence -------------------------------------------------------
 
+    /// <summary>
+    /// Stored as one JSON row in the node's SQLite database rather than its own
+    /// file: the write is transactional, so a power cut during a save can no
+    /// longer leave a half-written settings file that the next launch reads as
+    /// "corrupt, use defaults" — which would silently hand the owner's card
+    /// back to the default 75% share and the default schedule.
+    /// </summary>
+    private const string StoreKey = "node-settings";
+
     private static readonly JsonSerializerOptions Json = new()
     {
-        WriteIndented = true,
         DefaultIgnoreCondition = JsonIgnoreCondition.Never,
     };
 
-    public static string DefaultPath(string dataDirectory) => Path.Combine(dataDirectory, "settings.json");
-
-    public static NodeSettings Load(string path)
+    public static NodeSettings Load(Storage.NodeStore store)
     {
         try
         {
-            if (File.Exists(path))
+            if (store.GetSetting(StoreKey) is { Length: > 0 } json)
             {
-                var loaded = JsonSerializer.Deserialize<NodeSettings>(File.ReadAllText(path), Json);
+                var loaded = JsonSerializer.Deserialize<NodeSettings>(json, Json);
                 if (loaded is not null)
                 {
                     loaded.Clamp();
@@ -136,18 +142,36 @@ public sealed class NodeSettings
         }
         catch
         {
-            // A corrupt settings file must not stop the node from starting.
-            // Defaults are safe; the owner's choices are one screen away.
+            // Unreadable settings must not stop the node from starting.
         }
         return new NodeSettings();
     }
 
-    public void Save(string path)
+    public void Save(Storage.NodeStore store)
     {
         Clamp();
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        string tmp = path + ".tmp";
-        File.WriteAllText(tmp, JsonSerializer.Serialize(this, Json));
-        File.Move(tmp, path, overwrite: true);   // never a half-written file
+        store.SetSetting(StoreKey, JsonSerializer.Serialize(this, Json));
+    }
+
+    /// <summary>One-time import of the JSON file the node used before it had a database.</summary>
+    public static void MigrateLegacyFile(string dataDirectory, Storage.NodeStore store)
+    {
+        string legacy = Path.Combine(dataDirectory, "settings.json");
+        try
+        {
+            if (!File.Exists(legacy) || store.GetSetting(StoreKey) is { Length: > 0 }) return;
+
+            var loaded = JsonSerializer.Deserialize<NodeSettings>(File.ReadAllText(legacy), Json);
+            if (loaded is null) return;
+
+            loaded.Save(store);
+            // Renamed, not deleted: if the import got something wrong the
+            // owner's real choices are still on disk to look at.
+            File.Move(legacy, legacy + ".imported", overwrite: true);
+        }
+        catch
+        {
+            // A failed import just means defaults; never a failed start.
+        }
     }
 }

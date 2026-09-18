@@ -1,3 +1,5 @@
+using GpuxMine.Node.Storage;
+
 namespace GpuxMine.Node;
 
 public enum JobStatus { Queued, Running, Completed, Failed }
@@ -27,86 +29,64 @@ public sealed class JobRecord
 /// The Live Queue screen's data: what ran, what is running, how it went.
 /// </summary>
 /// <remarks>
-/// Bounded like the log. Today's counters are derived from it on demand rather
-/// than kept as separate mutable totals, so there is one source of truth for
-/// "jobs done today" and it cannot drift from the list on screen.
+/// Every row goes to SQLite. Counters are queried, never accumulated in a
+/// field, so the number on screen cannot drift from the rows behind it — and
+/// "jobs done today" survives a reboot, which the in-memory version did not.
 /// </remarks>
-public sealed class JobHistory
+public sealed class JobHistory(NodeStore store)
 {
-    public const int Capacity = 300;
-
-    private readonly Lock _gate = new();
-    private readonly LinkedList<JobRecord> _jobs = new();
-    private readonly Dictionary<string, JobRecord> _byId = new(StringComparer.Ordinal);
-
     public event Action<JobRecord>? Changed;
 
-    public JobRecord Submitted(string promptId, int nodesTotal, string kind)
+    private readonly Lock _currentGate = new();
+    private JobRecord? _current;
+
+    public JobRecord Submitted(string promptId, int nodesTotal, string kind, bool freeShare = false)
     {
         var job = new JobRecord { PromptId = promptId, NodesTotal = nodesTotal, Kind = kind };
-        lock (_gate)
-        {
-            _jobs.AddLast(job);
-            _byId[promptId] = job;
-            while (_jobs.Count > Capacity)
-            {
-                var evicted = _jobs.First!.Value;
-                _jobs.RemoveFirst();
-                _byId.Remove(evicted.PromptId);
-            }
-        }
+        store.JobSubmitted(promptId, kind, nodesTotal, freeShare);
+        lock (_currentGate) _current = job;
         Changed?.Invoke(job);
         return job;
     }
 
     public void Started(string promptId)
     {
-        JobRecord? job;
-        lock (_gate)
+        store.JobStarted(promptId);
+        lock (_currentGate)
         {
-            if (!_byId.TryGetValue(promptId, out job)) return;
-            job.Status = JobStatus.Running;
-            job.StartedAt = DateTimeOffset.Now;
+            if (_current?.PromptId == promptId)
+            {
+                _current.Status = JobStatus.Running;
+                _current.StartedAt = DateTimeOffset.Now;
+            }
         }
-        Changed?.Invoke(job);
+        Changed?.Invoke(Current ?? new JobRecord { PromptId = promptId });
     }
 
     public void Finished(string promptId, bool success, string? filename, string? error)
     {
-        JobRecord? job;
-        lock (_gate)
+        store.JobFinished(promptId, success, filename, error);
+        lock (_currentGate)
         {
-            if (!_byId.TryGetValue(promptId, out job)) return;
-            job.Status = success ? JobStatus.Completed : JobStatus.Failed;
-            job.CompletedAt = DateTimeOffset.Now;
-            job.StartedAt ??= job.CompletedAt;
-            job.OutputFilename = filename;
-            job.Error = error;
+            if (_current?.PromptId == promptId) _current = null;
         }
-        Changed?.Invoke(job);
+        Changed?.Invoke(new JobRecord { PromptId = promptId, Status = success ? JobStatus.Completed : JobStatus.Failed });
     }
 
+    /// <summary>The job in flight, held in memory: it changes several times a second while rendering.</summary>
     public JobRecord? Current
     {
-        get { lock (_gate) return _jobs.LastOrDefault(j => j.Status is JobStatus.Running or JobStatus.Queued); }
+        get { lock (_currentGate) return _current; }
     }
 
-    public IReadOnlyList<JobRecord> Snapshot()
-    {
-        lock (_gate) return _jobs.Reverse().ToList();   // newest first
-    }
+    public IReadOnlyList<JobRecord> Snapshot(int limit = 100) => store.RecentJobs(limit);
 
     public (int Completed, int Failed) CountsSince(DateTimeOffset since)
     {
-        lock (_gate)
-        {
-            int ok = 0, bad = 0;
-            foreach (var j in _jobs)
-            {
-                if (j.CompletedAt is not { } c || c < since) continue;
-                if (j.Status == JobStatus.Completed) ok++; else if (j.Status == JobStatus.Failed) bad++;
-            }
-            return (ok, bad);
-        }
+        var (ok, failed, _) = store.Totals(since);
+        return (ok, failed);
     }
+
+    /// <summary>What the pool has actually paid for work finished since <paramref name="since"/>. Null when it has paid nothing yet.</summary>
+    public decimal? EarnedSince(DateTimeOffset since) => store.Totals(since).EarnedThb;
 }

@@ -325,6 +325,61 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Asks ComfyUI directly how a job ended.
+    /// </summary>
+    /// <remarks>
+    /// The websocket is the fast path, not the record. Events are missed
+    /// whenever the socket reconnects, and a fully-cached prompt can finish
+    /// without emitting the pair we listen for at all — measured: three
+    /// identical upscales in a row left the third stuck at "queued" in the
+    /// ledger although ComfyUI had it as complete. A job the node did but never
+    /// recorded is a job the owner is not paid for, so the ledger is settled
+    /// from history, which is authoritative.
+    /// </remarks>
+    public async Task<(bool Done, bool Success, string? Filename, string? Error)> QueryHistoryAsync(string promptId, CancellationToken ct)
+    {
+        try
+        {
+            using var response = await _http.GetAsync($"{_options.ComfyUrl.TrimEnd('/')}/history/{Uri.EscapeDataString(promptId)}", ct);
+            if (!response.IsSuccessStatusCode) return (false, false, null, null);
+
+            JsonNode? root = JsonNode.Parse(await response.Content.ReadAsStringAsync(ct));
+            JsonNode? entry = root?[promptId];
+            if (entry is null) return (false, false, null, null);
+
+            string? statusStr = entry["status"]?["status_str"]?.GetValue<string>();
+            bool completed = entry["status"]?["completed"]?.GetValue<bool>() ?? false;
+
+            if (statusStr == "error")
+                return (true, false, null, "ComfyUI reported an execution error");
+
+            if (!completed && statusStr != "success") return (false, false, null, null);
+
+            // Outputs are keyed by node id; any of them may hold the file.
+            string? filename = null;
+            if (entry["outputs"] is JsonObject outputs)
+            {
+                foreach (var node in outputs)
+                {
+                    foreach (string bucket in (string[])["images", "gifs", "videos", "audio"])
+                    {
+                        if (node.Value?[bucket] is JsonArray items && items.Count > 0)
+                        {
+                            filename ??= items[0]?["filename"]?.GetValue<string>();
+                        }
+                    }
+                }
+            }
+
+            return (true, true, filename, null);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return (false, false, null, null);
+        }
+    }
+
     /// <summary>Listens to ComfyUI as the submitting client, reconnecting for as long as the agent runs.</summary>
     public async Task TrackProgressAsync(CancellationToken ct)
     {

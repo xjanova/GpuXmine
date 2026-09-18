@@ -32,15 +32,15 @@ public sealed class NodeHost : IAsyncDisposable
     public NodeSettings Settings { get; }
     public NodeState State { get; } = new();
     public ActivityLog Log { get; }
-    public JobHistory Jobs { get; } = new();
+    public JobHistory Jobs { get; }
     public ComfyRuntime Runtime { get; }
     public SelfUpdater Updater { get; }
+    public Storage.NodeStore Store { get; }
 
     private readonly ITelemetrySource _telemetry;
     private readonly IUserActivitySource _activity;
     private readonly XmanStudioClient _studio;
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(20) };
-    private readonly string _settingsPath;
     private readonly CancellationTokenSource _hostCts = new();
     private readonly List<Task> _background = [];
 
@@ -59,9 +59,11 @@ public sealed class NodeHost : IAsyncDisposable
         ILoggerish? alsoLogTo = null)
     {
         Options = options;
-        Log = new ActivityLog(alsoLogTo);
-        _settingsPath = NodeSettings.DefaultPath(options.DataDirectory);
-        Settings = NodeSettings.Load(_settingsPath);
+        Store = new Storage.NodeStore(Path.Combine(options.DataDirectory, "node.db"));
+        NodeSettings.MigrateLegacyFile(options.DataDirectory, Store);
+        Settings = NodeSettings.Load(Store);
+        Log = new ActivityLog(Store, alsoLogTo);
+        Jobs = new JobHistory(Store);
 
         var nothing = new NullTelemetry();
         _telemetry = telemetry ?? nothing;
@@ -91,6 +93,8 @@ public sealed class NodeHost : IAsyncDisposable
         _background.Add(Guard(Runtime.TrackProgressAsync(_hostCts.Token), "progress tracker"));
         _background.Add(Guard(SenseLoopAsync(_hostCts.Token), "sensing"));
         _background.Add(Guard(StudioLoopAsync(_hostCts.Token), "xman studio"));
+        _background.Add(Guard(SweepLoopAsync(_hostCts.Token), "database sweep"));
+        _background.Add(Guard(ReconcileLoopAsync(_hostCts.Token), "ledger reconcile"));
         if (Options.AutoUpdate)
             _background.Add(Guard(UpdateLoopAsync(_hostCts.Token), "updates"));
     }
@@ -147,7 +151,7 @@ public sealed class NodeHost : IAsyncDisposable
             // Quiet on success. Every slider tick and screen change lands here,
             // and "settings saved" six times in ten seconds is the log telling
             // the owner nothing about their node.
-            Settings.Save(_settingsPath);
+            Settings.Save(Store);
             Reevaluate();
         }
         catch (Exception ex)
@@ -226,11 +230,66 @@ public sealed class NodeHost : IAsyncDisposable
 
             Reevaluate();
 
-            var (ok, failed) = Jobs.CountsSince(new DateTimeOffset(DateTimeOffset.Now.Date, DateTimeOffset.Now.Offset));
+            // Counted in SQL from midnight, so the figure survives a restart
+            // and cannot drift from the rows the queue screen is showing.
+            var midnight = new DateTimeOffset(DateTimeOffset.Now.Date, DateTimeOffset.Now.Offset);
+            var (ok, failed, earned) = Store.Totals(midnight);
             State.SetCounts(ok, failed);
+            State.SetEarnedToday(earned);
             State.SetCurrentJob(Jobs.Current);
 
+            // A day boundary crossed while running: re-read so "today" means today.
+            if (today != DateTimeOffset.Now.Date) today = DateTimeOffset.Now.Date;
+
             try { await Task.Delay(SensePeriod, ct); }
+            catch (OperationCanceledException) { return; }
+        }
+    }
+
+    /// <summary>
+    /// Settles jobs the websocket never reported, by asking ComfyUI's history.
+    /// </summary>
+    /// <remarks>
+    /// The socket drops on every ComfyUI restart, and a fully-cached prompt can
+    /// complete without emitting the events we listen for. Either way the row
+    /// would sit at "queued" forever, and work the node actually did would
+    /// never reach the owner's count — so the ledger is reconciled against the
+    /// one source that cannot miss an event.
+    /// </remarks>
+    private async Task ReconcileLoopAsync(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            try { await Task.Delay(TimeSpan.FromSeconds(20), ct); }
+            catch (OperationCanceledException) { return; }
+
+            foreach (string promptId in Store.UnsettledJobs(TimeSpan.FromSeconds(15)))
+            {
+                var (done, success, filename, error) = await Runtime.QueryHistoryAsync(promptId, ct);
+                if (!done) continue;
+
+                Store.JobFinished(promptId, success, filename, error);
+                Log.Info($"[job] reconciled {Short(promptId)} from history: {(success ? "completed" : "failed")}");
+            }
+        }
+    }
+
+    /// <summary>Trims the database past its retention window. Cheap, and only ever once a day.</summary>
+    private async Task SweepLoopAsync(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                Store.Sweep();
+                Log.Info($"[cfg] local database {Store.SizeBytes() / 1024.0 / 1024.0:0.0} MB after sweep");
+            }
+            catch (Exception ex)
+            {
+                Log.Warn($"[warn] database sweep failed: {ex.Message}");
+            }
+
+            try { await Task.Delay(TimeSpan.FromHours(24), ct); }
             catch (OperationCanceledException) { return; }
         }
     }
@@ -397,6 +456,7 @@ public sealed class NodeHost : IAsyncDisposable
         _telemetry.Dispose();
         _http.Dispose();
         _hostCts.Dispose();
-        Log.Info("[cfg] node stopped");
+        Log.Info("[cfg] node stopped");   // last write before the store closes
+        Store.Dispose();
     }
 }
