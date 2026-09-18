@@ -135,9 +135,41 @@ public sealed class AgentTelemetry
     [JsonPropertyName("tier")]
     public string? Tier { get; set; }
 
-    /// <summary>Kinds of work this machine was measured able to do, e.g. ["image","upscale"].</summary>
+    /// <summary>Kinds of work this machine can do at all, e.g. ["image","upscale"].</summary>
+    /// <remarks>
+    /// "At all" is the important word, and it is why <see cref="Lanes"/> exists
+    /// beside it. A machine in the slow lane for image work belongs in this
+    /// list — it really does produce the image — but sending it a customer who
+    /// is watching a progress bar is a different decision.
+    /// </remarks>
     [JsonPropertyName("canRun")]
     public string[]? CanRun { get; set; }
+
+    /// <summary>
+    /// How fast each kind in <see cref="CanRun"/> is: <c>full</c> for work
+    /// somebody is waiting on, <c>slow</c> for work sitting in a queue.
+    /// </summary>
+    /// <remarks>
+    /// Without this the pool can only see that a node said yes, and the first
+    /// thing it does with a machine measured at four minutes an image is hand
+    /// it someone who expected two. A node that has not been re-measured since
+    /// this field existed sends nothing, and everything it lists is treated as
+    /// the fast lane, which is exactly what the pool assumed before.
+    /// </remarks>
+    [JsonPropertyName("lanes")]
+    public Dictionary<string, string>? Lanes { get; set; }
+
+    /// <summary>
+    /// Kinds whose lane was given on trust and not yet earned on real jobs.
+    /// </summary>
+    /// <remarks>
+    /// A new node is put in the fast lane for everything its card can hold, and
+    /// graded down by its own finished jobs. Saying which of those promises are
+    /// still unproven lets the pool start such a machine on something forgiving
+    /// rather than on its most impatient customer.
+    /// </remarks>
+    [JsonPropertyName("provisional")]
+    public string[]? Provisional { get; set; }
 
     /// <summary>The machine's own name, so the back office lists rigs the way their owner talks about them.</summary>
     [JsonPropertyName("host")]

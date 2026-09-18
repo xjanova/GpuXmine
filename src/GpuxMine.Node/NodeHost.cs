@@ -271,6 +271,11 @@ public sealed class NodeHost : IAsyncDisposable
             Score = report?.Score ?? 0,
             Tier = report?.Tier ?? Assessment?.Tier ?? "unrated",
             CanRun = report?.Capabilities.Where(c => c.CanRun).Select(c => c.Kind).ToArray() ?? [],
+            // Sent alongside, not instead: the pool has to be able to tell a
+            // machine that makes an image in twelve seconds from one that makes
+            // the same image in four minutes, and CanRun says yes to both.
+            Lanes = report?.Capabilities.Where(c => c.CanRun).ToDictionary(c => c.Kind, c => c.Lane),
+            Provisional = report?.Capabilities.Where(c => c.Provisional).Select(c => c.Kind).ToArray() ?? [],
             Host = MachineIdentity.MachineName(),
         };
     }

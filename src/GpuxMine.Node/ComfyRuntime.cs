@@ -182,6 +182,14 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
                     vram_mb = report.VramTotalMb,
                     measured_at = report.MeasuredAt,
                     can_run = report.Capabilities.Where(c => c.CanRun).Select(c => c.Kind).ToArray(),
+                    // `can_run` says the machine can do the work; `lanes` says
+                    // whether anybody should be sitting there watching it. A
+                    // dispatcher with only the first will eventually give a
+                    // four-minute card to a customer expecting twelve seconds.
+                    lanes = report.Capabilities.Where(c => c.CanRun)
+                        .ToDictionary(c => c.Kind, c => c.Lane),
+                    provisional = report.Capabilities.Where(c => c.Provisional)
+                        .Select(c => c.Kind).ToArray(),
                     seconds_per_unit = report.Capabilities.Where(c => c.CanRun)
                         .ToDictionary(c => c.Kind, c => c.SecondsPerUnit),
                 },
