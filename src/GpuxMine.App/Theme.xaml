@@ -214,6 +214,11 @@
         <Setter Property="Foreground" Value="{StaticResource InkLabel}"/>
         <Setter Property="Typography.Capitals" Value="AllSmallCaps"/>
         <Setter Property="Margin" Value="0,0,0,10"/>
+        <!-- Narrow the window and "JOBS DONE TODAY" silently became
+             "JOBS DONE TODA". A heading that loses its last letter without
+             saying so is the cut-off text this layout is supposed to be free
+             of; two lines is the honest answer. -->
+        <Setter Property="TextWrapping" Value="Wrap"/>
     </Style>
     <Style x:Key="Body" TargetType="TextBlock">
         <Setter Property="FontFamily" Value="{StaticResource UiFont}"/>
@@ -533,6 +538,165 @@
                 </ControlTemplate>
             </Setter.Value>
         </Setter>
+    </Style>
+
+
+    <!-- ══════════ Scrollbars ══════════
+         One style for the whole app. The trough is a translucent black so the
+         same bar sits correctly on the light chrome panels AND on the dark
+         console in the log view; only the thumb carries the metal. -->
+
+    <SolidColorBrush x:Key="ScrollTrough" Color="#1e000000"/>
+    <SolidColorBrush x:Key="ScrollGrip" Color="#8d95a0"/>
+
+    <LinearGradientBrush x:Key="ScrollThumbV" StartPoint="0,0" EndPoint="1,0">
+        <GradientStop Color="#fdfdfe" Offset="0"/>
+        <GradientStop Color="#e2e7ec" Offset="0.45"/>
+        <GradientStop Color="#bcc3cb" Offset="1"/>
+    </LinearGradientBrush>
+    <LinearGradientBrush x:Key="ScrollThumbVHot" StartPoint="0,0" EndPoint="1,0">
+        <GradientStop Color="#fffbee" Offset="0"/>
+        <GradientStop Color="#f0dca4" Offset="0.45"/>
+        <GradientStop Color="#cfa93c" Offset="1"/>
+    </LinearGradientBrush>
+    <LinearGradientBrush x:Key="ScrollThumbH" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#fdfdfe" Offset="0"/>
+        <GradientStop Color="#e2e7ec" Offset="0.45"/>
+        <GradientStop Color="#bcc3cb" Offset="1"/>
+    </LinearGradientBrush>
+    <LinearGradientBrush x:Key="ScrollThumbHHot" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#fffbee" Offset="0"/>
+        <GradientStop Color="#f0dca4" Offset="0.45"/>
+        <GradientStop Color="#cfa93c" Offset="1"/>
+    </LinearGradientBrush>
+
+    <!-- Clicking the trough still pages, it just draws nothing -->
+    <Style x:Key="ScrollPageButton" TargetType="RepeatButton">
+        <Setter Property="OverridesDefaultStyle" Value="True"/>
+        <Setter Property="IsTabStop" Value="False"/>
+        <Setter Property="Focusable" Value="False"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="RepeatButton"><Border Background="Transparent"/></ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="ScrollThumbStyleV" TargetType="Thumb">
+        <Setter Property="OverridesDefaultStyle" Value="True"/>
+        <Setter Property="IsTabStop" Value="False"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Thumb">
+                    <Grid Margin="2,0" SnapsToDevicePixels="True">
+                        <Border x:Name="Face" CornerRadius="4" Background="{StaticResource ScrollThumbV}"
+                                BorderBrush="{StaticResource ChromeBorderDark}" BorderThickness="1"/>
+                        <Border CornerRadius="3" Margin="1" BorderThickness="1" BorderBrush="#70ffffff" IsHitTestVisible="False"/>
+                        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" IsHitTestVisible="False">
+                            <Rectangle Width="7" Height="1" Fill="{StaticResource ScrollGrip}" Margin="0,0,0,2"/>
+                            <Rectangle Width="7" Height="1" Fill="{StaticResource ScrollGrip}" Margin="0,0,0,2"/>
+                            <Rectangle Width="7" Height="1" Fill="{StaticResource ScrollGrip}"/>
+                        </StackPanel>
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Face" Property="Background" Value="{StaticResource ScrollThumbVHot}"/>
+                            <Setter TargetName="Face" Property="BorderBrush" Value="{StaticResource GoldBorder}"/>
+                        </Trigger>
+                        <Trigger Property="IsDragging" Value="True">
+                            <Setter TargetName="Face" Property="Background" Value="{StaticResource GoldFill}"/>
+                            <Setter TargetName="Face" Property="BorderBrush" Value="{StaticResource GoldBorder}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="ScrollThumbStyleH" TargetType="Thumb">
+        <Setter Property="OverridesDefaultStyle" Value="True"/>
+        <Setter Property="IsTabStop" Value="False"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Thumb">
+                    <Grid Margin="0,2" SnapsToDevicePixels="True">
+                        <Border x:Name="Face" CornerRadius="4" Background="{StaticResource ScrollThumbH}"
+                                BorderBrush="{StaticResource ChromeBorderDark}" BorderThickness="1"/>
+                        <Border CornerRadius="3" Margin="1" BorderThickness="1" BorderBrush="#70ffffff" IsHitTestVisible="False"/>
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Center" IsHitTestVisible="False">
+                            <Rectangle Width="1" Height="7" Fill="{StaticResource ScrollGrip}" Margin="0,0,2,0"/>
+                            <Rectangle Width="1" Height="7" Fill="{StaticResource ScrollGrip}" Margin="0,0,2,0"/>
+                            <Rectangle Width="1" Height="7" Fill="{StaticResource ScrollGrip}"/>
+                        </StackPanel>
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Face" Property="Background" Value="{StaticResource ScrollThumbHHot}"/>
+                            <Setter TargetName="Face" Property="BorderBrush" Value="{StaticResource GoldBorder}"/>
+                        </Trigger>
+                        <Trigger Property="IsDragging" Value="True">
+                            <Setter TargetName="Face" Property="Background" Value="{StaticResource GoldFill}"/>
+                            <Setter TargetName="Face" Property="BorderBrush" Value="{StaticResource GoldBorder}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style TargetType="ScrollBar">
+        <Setter Property="OverridesDefaultStyle" Value="True"/>
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Width" Value="12"/>
+        <Setter Property="MinWidth" Value="12"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ScrollBar">
+                    <Grid Background="Transparent" SnapsToDevicePixels="True">
+                        <Border Background="{StaticResource ScrollTrough}" CornerRadius="5" Margin="3,1"/>
+                        <Track x:Name="PART_Track" IsDirectionReversed="True">
+                            <Track.DecreaseRepeatButton>
+                                <RepeatButton Style="{StaticResource ScrollPageButton}" Command="ScrollBar.PageUpCommand"/>
+                            </Track.DecreaseRepeatButton>
+                            <Track.Thumb>
+                                <Thumb Style="{StaticResource ScrollThumbStyleV}" MinHeight="30"/>
+                            </Track.Thumb>
+                            <Track.IncreaseRepeatButton>
+                                <RepeatButton Style="{StaticResource ScrollPageButton}" Command="ScrollBar.PageDownCommand"/>
+                            </Track.IncreaseRepeatButton>
+                        </Track>
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+        <Style.Triggers>
+            <Trigger Property="Orientation" Value="Horizontal">
+                <Setter Property="Width" Value="Auto"/>
+                <Setter Property="MinWidth" Value="0"/>
+                <Setter Property="Height" Value="12"/>
+                <Setter Property="MinHeight" Value="12"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="ScrollBar">
+                            <Grid Background="Transparent" SnapsToDevicePixels="True">
+                                <Border Background="{StaticResource ScrollTrough}" CornerRadius="5" Margin="1,3"/>
+                                <Track x:Name="PART_Track" Orientation="Horizontal">
+                                    <Track.DecreaseRepeatButton>
+                                        <RepeatButton Style="{StaticResource ScrollPageButton}" Command="ScrollBar.PageLeftCommand"/>
+                                    </Track.DecreaseRepeatButton>
+                                    <Track.Thumb>
+                                        <Thumb Style="{StaticResource ScrollThumbStyleH}" MinWidth="30"/>
+                                    </Track.Thumb>
+                                    <Track.IncreaseRepeatButton>
+                                        <RepeatButton Style="{StaticResource ScrollPageButton}" Command="ScrollBar.PageRightCommand"/>
+                                    </Track.IncreaseRepeatButton>
+                                </Track>
+                            </Grid>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Trigger>
+        </Style.Triggers>
     </Style>
 
 </ResourceDictionary>

@@ -28,8 +28,25 @@ namespace GpuxMine.Node.Assessment;
 /// what makes the number worth storing.
 /// </para>
 /// </remarks>
-public sealed class Assessor(NodeOptions options, ILoggerish log, Storage.NodeStore? history = null) : IDisposable
+public sealed class Assessor(
+    NodeOptions options,
+    ILoggerish log,
+    Storage.NodeStore? history = null,
+    IHostHealthSource? health = null,
+    IProgress<AssessmentProgress>? progress = null) : IDisposable
 {
+    private readonly AssessmentProgressTracker _steps = new(progress);
+
+    /// <summary>
+    /// How far back an unexpected power loss counts against a node.
+    /// </summary>
+    /// <remarks>
+    /// Long enough to catch a machine that is failing under load, short enough
+    /// that one bad evening — a tripped breaker, a plug pulled — does not
+    /// follow the owner around for a month. It clears itself.
+    /// </remarks>
+    public static readonly TimeSpan HardShutdownWindow = TimeSpan.FromDays(7);
+
     /// <summary>Pixels per side of the reference image.</summary>
     private const int ReferenceSize = 2048;
 
@@ -68,28 +85,25 @@ public sealed class Assessor(NodeOptions options, ILoggerish log, Storage.NodeSt
     public const double LowVramPenalty = 10.0;
 
     /// <summary>
-    /// How far past the deadline an <i>unproven</i> estimate must fall before
-    /// it refuses work.
+    /// How many real jobs of a kind this node must have finished before its own
+    /// ledger is allowed to overrule the estimate.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Three levels of confidence, and the benefit of the doubt shrinks as the
-    /// evidence gets better. A median from this node's own ledger is a fact and
-    /// is held to the deadline exactly. So is an estimate carrying
-    /// <see cref="LowVramPenalty"/>, because that penalty was calibrated
-    /// against a direct measurement of the very failure mode it predicts. Only
-    /// a plain extrapolation from the blur benchmark gets this margin, because
-    /// a prediction that is 30% pessimistic would otherwise cost the owner
-    /// every job of that kind for a month.
+    /// The whole grading model turns on this. Until a node has run this many,
+    /// it keeps the top lane on trust; from here on it is graded on its median,
+    /// up as well as down. Three is the smallest number that has a median at
+    /// all, and one slow job — a cold cache, the owner opening a game — should
+    /// not cost a machine its lane.
     /// </para>
     /// <para>
-    /// The distinction is not academic: on the card this was written on the
-    /// penalised estimate for an image job came out at 246 s against a 120 s
-    /// deadline. At a flat 2x margin that is 246 against a limit of 240 — six
-    /// seconds from admitting a machine that really takes 279 s.
+    /// The estimate does not gate anything any more, which is the point: it is
+    /// an extrapolation from a three-second blur, and on the card this was
+    /// written on it predicted 246 s for an image job that really took 279 s.
+    /// Close, and still no substitute for having run one.
     /// </para>
     /// </remarks>
-    public const double EstimateMargin = 2.0;
+    public const int MinSamples = 3;
 
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromMinutes(5) };
     private readonly Random _random = new();
@@ -105,24 +119,46 @@ public sealed class Assessor(NodeOptions options, ILoggerish log, Storage.NodeSt
     /// is a sentence a node owner can act on — by adding VRAM, by dropping
     /// <c>--lowvram</c>, or by accepting that this machine does upscales.
     /// </remarks>
-    private static readonly (string Kind, int MinVramMb, double BaselineSeconds, double DeadlineSeconds, string Needs, bool WeightsSpill)[] Kinds =
+    /// <remarks>
+    /// <para>
+    /// Every deadline comes in two: the one a customer waiting on the page will
+    /// accept, and the one a queued job nobody is watching will accept. A
+    /// machine that misses the first and makes the second is not turned away —
+    /// it is put in the slow lane and scored lower, which is the whole point of
+    /// a network made of other people's home PCs.
+    /// </para>
+    /// <para>
+    /// The VRAM numbers are floors for running at all, not for running well.
+    /// They were 6 GB across the board and that alone disqualified the card
+    /// this client was built on from three of the five kinds of work — while
+    /// the same card had already been measured finishing an SDXL image and a
+    /// Wan video. A floor should mean "cannot", and 6 GB did not.
+    /// </para>
+    /// </remarks>
+    private static readonly (string Kind, int MinVramMb, double BaselineSeconds, double DeadlineSeconds, double SlowDeadlineSeconds, string Needs, bool WeightsSpill)[] Kinds =
     [
-        ("upscale", 2_048, 2, 60, "upscale-model", false),
+        ("upscale", 2_048, 2, 60, 240, "upscale-model", false),
         // เพลง — หมวดที่ใหญ่ที่สุดในแคตตาล็อกจริง (3 จาก 5 โมเดล) และเป็นหมวด
         // ที่การ์ดบ้านมีโอกาสที่สุด: ACE-Step โหลดไฟล์รวม 10 GB ก็จริง แต่ชิ้น
         // ใหญ่สุดที่ต้องอยู่ใน VRAM พร้อมกันคือ 4.79 GB — text encoder ทำงาน
         // ก่อนแล้วถูก offload ไม่ได้อยู่พร้อมกันทั้งหมด
         //
         // คนรอเพลงได้นานกว่ารอภาพ แต่ไม่นานเท่ารอวิดีโอ
-        ("audio", 6_144, 30, 600, "diffusion-model", false),
+        //
+        // 4.79 GB is the largest single piece ACE-Step needs resident, so the
+        // floor is just above it rather than at the 10 GB the whole download
+        // weighs. Half an hour is a long wait, but a track nobody is sitting in
+        // front of is worth more finished late than not made at all.
+        ("audio", 5_120, 30, 600, 1_800, "diffusion-model", false),
         // An SDXL-class checkpoint is 6-7 GB, which is what spills on the cards
-        // most of this network will be built from.
-        ("image", 6_144, 12, 120, "checkpoint", true),
+        // most of this network will be built from. It spills — it does not
+        // fail: the measured 279 s on an 8 GB card is a real image, delivered.
+        ("image", 4_096, 12, 120, 360, "checkpoint", true),
         // The video models an 8 GB card can actually run are small — Wan 1.3B is
         // 2.5 GB and stays resident, which is why it was measured at the
         // unpenalised estimate rather than ten times it.
-        ("video", 6_144, 90, 900, "diffusion-model", false),
-        ("embed", 2_048, 1, 30, "checkpoint", false),
+        ("video", 5_120, 90, 900, 2_700, "diffusion-model", false),
+        ("embed", 2_048, 1, 30, 120, "checkpoint", false),
     ];
 
     public async Task<NodeAssessment> RunAsync(string agentVersion, string? hardwareHash, string? driver, CancellationToken ct)
@@ -137,10 +173,23 @@ public sealed class Assessor(NodeOptions options, ILoggerish log, Storage.NodeSt
 
         try
         {
+            _steps.Begin("spec");
             await ReadSystemAsync(assessment, ct);
+            _steps.Finish("spec");
+
+            _steps.Begin("models");
             await ReadInventoryAsync(assessment, ct);
+            _steps.Finish("models");
+
+            _steps.Begin("power");
+            ReadHostHealth(assessment);
+            _steps.Finish("power");
+
             assessment.ReferenceSeconds = await TimeReferenceWorkloadAsync(ct);
+
+            _steps.Begin("score");
             Score(assessment, history);
+            _steps.Finish("score");
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -149,6 +198,13 @@ public sealed class Assessor(NodeOptions options, ILoggerish log, Storage.NodeSt
             // at "connected, earning nothing" with no explanation.
             assessment.Failed = ex.Message;
             log.Warn($"[gpu] assessment failed: {ex.Message}");
+        }
+        finally
+        {
+            // Including on the way out of a failure: a bar stopped partway with
+            // nothing running looks exactly like the hang this was built to
+            // rule out. The report itself says whether it worked.
+            _steps.Done();
         }
 
         return assessment;
@@ -184,10 +240,41 @@ public sealed class Assessor(NodeOptions options, ILoggerish log, Storage.NodeSt
             throw new InvalidOperationException("no CUDA device reported — this node has no usable GPU");
     }
 
+    /// <summary>
+    /// What the card is allowed to draw and whether this host has been dying
+    /// under load — read before the benchmark, so the timing that follows can
+    /// be read in the light of both.
+    /// </summary>
+    /// <remarks>
+    /// Taken outside the try/catch that fails an assessment. A host that will
+    /// not say whether it has been losing power is a host we know nothing
+    /// about, which is the same as a brand new one; it is not a broken node.
+    /// </remarks>
+    private void ReadHostHealth(NodeAssessment a)
+    {
+        HostHealth reading;
+        try
+        {
+            reading = health?.Read(HardShutdownWindow) ?? HostHealth.Unknown;
+        }
+        catch (Exception ex)
+        {
+            log.Warn($"[gpu] could not read host health: {ex.Message}");
+            reading = HostHealth.Unknown;
+        }
+
+        a.PowerLimitW = reading.PowerLimitW;
+        a.PowerDefaultW = reading.PowerDefaultW;
+        a.HardShutdowns = reading.HardShutdowns;
+        a.LastHardShutdown = reading.LastHardShutdown;
+    }
+
     private async Task ReadInventoryAsync(NodeAssessment a, CancellationToken ct)
     {
         a.Checkpoints = await OptionsOfAsync("CheckpointLoaderSimple", "ckpt_name", ct);
+        _steps.At("models", 33);
         a.Upscalers = await OptionsOfAsync("UpscaleModelLoader", "model_name", ct);
+        _steps.At("models", 66);
         a.DiffusionModels = await OptionsOfAsync("UNETLoader", "unet_name", ct);
     }
 
@@ -227,11 +314,26 @@ public sealed class Assessor(NodeOptions options, ILoggerish log, Storage.NodeSt
     {
         double best = double.MaxValue;
 
+        // Nothing is known about this card yet, so the first bar is paced
+        // against a card slower than most. The second is paced against what
+        // this machine has just been seen to do, which makes it honest.
+        double expected = 6.0;
+
         for (int pass = 0; pass < 2; pass++)
         {
+            string step = pass == 0 ? "warmup" : "measure";
+            _steps.Begin(step);
+
             var sw = Stopwatch.StartNew();
-            await RunGraphAsync(ReferenceGraph(_random.Next(0, 0xFFFFFF)), ct);
+            await RunGraphAsync(
+                ReferenceGraph(_random.Next(0, 0xFFFFFF)),
+                ct,
+                elapsed => _steps.At(step, (int)(elapsed.TotalSeconds / expected * 100)));
             sw.Stop();
+
+            _steps.Finish(step);
+
+            expected = Math.Max(sw.Elapsed.TotalSeconds, 0.5);
             best = Math.Min(best, sw.Elapsed.TotalSeconds);
         }
 
@@ -305,7 +407,15 @@ public sealed class Assessor(NodeOptions options, ILoggerish log, Storage.NodeSt
         static JsonArray Link(string fromNode) => new(fromNode, 0);
     }
 
-    private async Task RunGraphAsync(string graph, CancellationToken ct)
+    /// <param name="onElapsed">
+    /// Called on every poll with how long this graph has been running, so the
+    /// caller can pace a bar. ComfyUI only sends per-node progress to the
+    /// client id that owns the render, and the assessment does not hold that
+    /// socket — the job runtime does — so time against a known expectation is
+    /// the honest signal available here. It is capped below 100 either way:
+    /// the bar completes when the render does, never before.
+    /// </param>
+    private async Task RunGraphAsync(string graph, CancellationToken ct, Action<TimeSpan>? onElapsed = null)
     {
         using var submit = await _http.PostAsync(
             $"{options.ComfyUrl.TrimEnd('/')}/prompt",
@@ -318,9 +428,12 @@ public sealed class Assessor(NodeOptions options, ILoggerish log, Storage.NodeSt
         string promptId = JsonNode.Parse(body)?["prompt_id"]?.GetValue<string>()
             ?? throw new InvalidOperationException("ComfyUI returned no prompt_id for the reference workload");
 
+        var running = Stopwatch.StartNew();
+
         for (int i = 0; i < 600; i++)
         {
             await Task.Delay(250, ct);
+            onElapsed?.Invoke(running.Elapsed);
 
             using var historyResponse = await _http.GetAsync(
                 $"{options.ComfyUrl.TrimEnd('/')}/history/{Uri.EscapeDataString(promptId)}", ct);
@@ -340,33 +453,88 @@ public sealed class Assessor(NodeOptions options, ILoggerish log, Storage.NodeSt
     }
 
     /// <summary>
-    /// Turns the measurements into a score, a tier, and a per-kind verdict.
+    /// VRAM on the card the tiers are drawn against — the same RTX 3060 that
+    /// <see cref="ReferenceBaselineSeconds"/> is taken from, so 12 GB.
+    /// </summary>
+    public const int ReferenceVramMb = 12_288;
+
+    /// <summary>
+    /// Turns the measurements into a score, a tier, and a per-kind lane.
     /// </summary>
     /// <remarks>
-    /// Three gates per kind of work, and a node has to pass all three:
-    /// enough VRAM to hold the weights, the models on disk to do it at all,
-    /// and an expected time inside the deadline a customer will wait. The last
-    /// one is the only one that needs the card to have actually been timed —
-    /// and it is the one that stops a willing but hopeless machine from being
-    /// handed a job somebody paid for.
+    /// <para>
+    /// Three things decide what a machine is worth, and they measure different
+    /// things, so none of them is double-counted:
+    /// </para>
+    /// <list type="number">
+    ///   <item><b>Speed</b>, from the blur benchmark. What the card does per
+    ///     second.</item>
+    ///   <item><b>Capacity</b>, from VRAM. The benchmark barely touches memory,
+    ///     so it says nothing at all about which weights will fit — and that is
+    ///     what decides whether the machine sees the good work.</item>
+    ///   <item><b>Power</b>, from the card's own ceiling. Also invisible to a
+    ///     three-second benchmark, which may never reach the limit at all,
+    ///     while a card held at half its rated watts will not hold its clocks
+    ///     through a five-minute render.</item>
+    /// </list>
+    /// <para>
+    /// Unexpected shutdowns are deliberately <i>not</i> in here. They are real
+    /// and they are reported, but a machine cannot tell a failing power supply
+    /// from a pulled plug or from an experiment somebody ran on it — and two of
+    /// the three on the host this was written against were exactly that. They
+    /// are a warning for the owner to act on, not a fine.
+    /// </para>
+    /// <para>
+    /// This number is what the owner is shown, not what anybody is paid on.
+    /// The client is a C# binary on someone else's PC and its IL opens in a
+    /// decompiler in seconds, so the payout formula is not in here — the raw
+    /// components go up with the report and the server does its own sums.
+    /// </para>
+    /// <para>
+    /// Per kind of work, a machine now gets a lane rather than a verdict.
+    /// It is refused only when the weights do not fit, when the models are not
+    /// on disk, or when it misses even the relaxed deadline; everything between
+    /// the two deadlines is work nobody is waiting on, which is most of what a
+    /// network of home PCs is good for.
+    /// </para>
     /// </remarks>
     private static void Score(NodeAssessment a, Storage.NodeStore? history)
     {
         double factor = a.ReferenceSeconds > 0 ? a.ReferenceSeconds / ReferenceBaselineSeconds : double.MaxValue;
 
         // 1000 on a reference card, halving as the card gets twice as slow.
-        a.Score = (int)Math.Round(Math.Clamp(1000 / Math.Max(factor, 0.1), 0, 10_000));
+        double speed = Math.Clamp(1000 / Math.Max(factor, 0.1), 0, 10_000);
 
+        // Square-rooted so that twice the VRAM is worth more than a card with
+        // half of it without being worth twice as much — memory opens doors,
+        // it does not do the work.
+        double capacity = a.VramTotalMb > 0
+            ? Math.Clamp(Math.Sqrt(a.VramTotalMb / (double)ReferenceVramMb), 0.55, 1.25)
+            : 0.55;
+
+        // Unmeasured is not penalised: a card that does not report its limits
+        // is not thereby a card running below them.
+        double power = a is { PowerLimitW: > 0, PowerDefaultW: > 0 }
+            ? Math.Clamp(0.70 + 0.30 * a.PowerLimitW / a.PowerDefaultW, 0.70, 1.0)
+            : 1.0;
+
+        a.Score = (int)Math.Round(speed * capacity * power);
+
+        // Lowered to match: the score now carries two more multipliers that can
+        // only pull it down, so the old cut-offs would have moved every honest
+        // home card a tier down for telling the truth about itself.
         a.Tier = a.Score switch
         {
-            >= 1500 => "platinum",
-            >= 700 => "gold",
-            >= 350 => "silver",
-            >= 120 => "bronze",
+            >= 1200 => "platinum",
+            >= 550 => "gold",
+            >= 250 => "silver",
+            >= 90 => "bronze",
             _ => "basic",
         };
 
-        foreach (var (kind, minVram, baseline, deadline, needs, weightsSpill) in Kinds)
+        Warn(a);
+
+        foreach (var (kind, minVram, baseline, deadline, slowDeadline, needs, weightsSpill) in Kinds)
         {
             bool hasAssets = needs switch
             {
@@ -379,15 +547,10 @@ public sealed class Assessor(NodeOptions options, ILoggerish log, Storage.NodeSt
             // What this machine has actually done beats what a blur benchmark
             // predicts it will do. The ledger already holds every job's real
             // duration, so once there are a few of a kind, they are the answer.
-            double? measured = history?.MedianJobSeconds(kind, minSamples: 3);
+            double? measured = history?.MedianJobSeconds(kind, minSamples: MinSamples);
 
             bool penalised = weightsSpill && a.LowVram;
             double expected = measured ?? baseline * factor * (penalised ? LowVramPenalty : 1);
-
-            // Only an unproven extrapolation gets the margin. A measurement, or
-            // an estimate carrying the calibrated spill penalty, is held to the
-            // deadline itself.
-            double limit = measured is null && !penalised ? deadline * EstimateMargin : deadline;
 
             var capability = new Capability
             {
@@ -399,29 +562,118 @@ public sealed class Assessor(NodeOptions options, ILoggerish log, Storage.NodeSt
 
             if (a.VramTotalMb < minVram)
             {
-                capability.CanRun = false;
-                capability.Reason = $"ต้องการ VRAM {minVram / 1024.0:0.#} GB มี {a.VramTotalMb / 1024.0:0.#} GB";
+                // Physics, not policy: the weights will not fit, on any lane,
+                // however long anybody is willing to wait.
+                capability.Lane = "no";
+                capability.Reason = $"ต้องการ VRAM อย่างน้อย {minVram / 1024.0:0.#} GB มี {a.VramTotalMb / 1024.0:0.#} GB";
             }
             else if (!hasAssets)
             {
-                capability.CanRun = false;
+                capability.Lane = "no";
                 capability.Reason = $"ยังไม่มีโมเดลสำหรับงานนี้ ({needs})";
             }
-            else if (expected > limit)
+            else if (measured is null)
             {
-                capability.CanRun = false;
+                // First round: the top bar, on trust. The machine has cleared
+                // the two gates that are facts — the weights fit and the models
+                // are there — and everything past that is a guess until it has
+                // run the work. It gets graded on what it does.
+                capability.Lane = "full";
+                capability.Provisional = true;
                 capability.Reason =
-                    (measured is null ? "คาดว่าใช้เวลา" : "จากงานจริงที่เคยทำ ใช้เวลา") +
-                    $" {expected:0} วินาที/ชิ้น เกินกำหนด {deadline:0} วินาที" +
-                    (penalised && measured is null ? " — ComfyUI รันโหมด --lowvram อยู่" : "");
+                    $"รอบแรก — ให้เต็มความเร็วไว้ก่อน (คาดว่า {expected:0} วินาที/ชิ้น) " +
+                    "แล้วปรับตามเวลาจริงเมื่อทำงานไปแล้ว " + MinSamples + " ชิ้น" +
+                    (penalised ? " · ComfyUI รันโหมด --lowvram อยู่" : "");
+            }
+            else if (expected <= deadline)
+            {
+                capability.Lane = "full";
+            }
+            else if (expected <= slowDeadline)
+            {
+                // Slower than someone watching a progress bar will accept, fine
+                // for a job sitting in a queue. The owner is told which it is.
+                capability.Lane = "slow";
+                capability.Reason =
+                    $"จากงานจริงที่เคยทำ ใช้เวลา {expected:0} วินาที/ชิ้น เกิน {deadline:0} วินาทีของงานด่วน — " +
+                    $"ลดมารับเฉพาะงานที่ไม่มีคนรอ (ถึง {slowDeadline:0} วินาที)";
             }
             else
             {
-                capability.CanRun = true;
+                capability.Lane = "no";
+                capability.Reason =
+                    $"จากงานจริงที่เคยทำ ใช้เวลา {expected:0} วินาที/ชิ้น " +
+                    $"เกินแม้แต่งานที่ไม่มีคนรอ ({slowDeadline:0} วินาที)";
             }
 
+            capability.CanRun = capability.Lane != "no";
             a.Capabilities.Add(capability);
         }
+    }
+
+    /// <summary>
+    /// Things the owner should know about their own machine, in their own
+    /// language, that are not a reason to refuse it work.
+    /// </summary>
+    /// <remarks>
+    /// All three of these cost real score, and none of them is visible from
+    /// inside ComfyUI — an owner whose card sits at half its rated watts has
+    /// almost certainly forgotten it, and one whose PC has been dropping out
+    /// under load may not have connected that to the jobs that never paid.
+    /// </remarks>
+    private static void Warn(NodeAssessment a)
+    {
+        if (a.PowerCapped)
+        {
+            a.Warnings.Add(
+                $"การ์ดถูกจำกัดไฟไว้ที่ {a.PowerLimitW} W จากสเปค {a.PowerDefaultW} W " +
+                $"({a.PowerPct}%) — คะแนนจึงต่ำกว่าที่การ์ดรุ่นนี้ทำได้จริง");
+        }
+
+        if (a.HardShutdowns > 0)
+        {
+            string when = a.LastHardShutdown is { } at
+                ? $" ล่าสุด {at.ToLocalTime():d MMM HH:mm}"
+                : "";
+            a.Warnings.Add(
+                $"เครื่องดับเองโดยไม่ได้สั่งปิด {a.HardShutdowns} ครั้งในสัปดาห์ที่ผ่านมา{when} — " +
+                "งานที่กำลังทำอยู่จะหายไปพร้อมกัน ตรวจพาวเวอร์ซัพพลายและสายไฟการ์ด");
+        }
+
+        if (a.LowVram)
+        {
+            a.Warnings.Add(
+                "ComfyUI รันโหมด --lowvram อยู่ — งานภาพจะช้ากว่าปกติมาก " +
+                "ถ้า VRAM พอ ลองเอาแฟล็กนี้ออกแล้วประเมินใหม่");
+        }
+    }
+
+    /// <summary>
+    /// Re-grades a report against the ledger, without touching the GPU.
+    /// </summary>
+    /// <remarks>
+    /// This is the tuning loop. A node starts every kind of work at the top
+    /// lane and keeps it until it has run <see cref="MinSamples"/> of them;
+    /// from that job onward its own median decides, and this is what applies
+    /// the decision. Without it a machine that had just proved it cannot hold
+    /// an image deadline would keep taking urgent image work until the next
+    /// full re-assessment, six hours later.
+    ///
+    /// It is cheap and deterministic — the same scoring maths over stored
+    /// numbers and the job ledger — so it can run after every job.
+    /// </remarks>
+    /// <returns>True when any lane moved, which is the only time it is worth telling anybody.</returns>
+    public static bool Regrade(NodeAssessment report, Storage.NodeStore history)
+    {
+        if (report.Failed is not null || report.ReferenceSeconds <= 0) return false;
+
+        var before = report.Capabilities.ToDictionary(c => c.Kind, c => c.Lane);
+
+        report.Capabilities.Clear();
+        report.Warnings.Clear();
+        Score(report, history);
+
+        return report.Capabilities.Any(c => !before.TryGetValue(c.Kind, out string? was) || was != c.Lane);
     }
 
     public static NodeAssessment? Load(Storage.NodeStore store)

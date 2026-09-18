@@ -1,3 +1,5 @@
+using System.Globalization;
+
 using Microsoft.Data.Sqlite;
 
 namespace GpuxMine.Node.Storage;
@@ -91,6 +93,8 @@ public sealed class NodeStore : IDisposable
                 PRAGMA foreign_keys = ON;
                 """);
 
+            CheckIntegrity(connection);
+
             return connection;
         }
         catch
@@ -104,6 +108,45 @@ public sealed class NodeStore : IDisposable
     }
 
     /// <summary>
+    /// Asks the file whether it is sound, while there is still somewhere to put
+    /// it if it is not.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Opening a corrupt SQLite database usually succeeds — the damage surfaces
+    /// later, on whichever statement happens to touch the broken page. That is
+    /// how a bad ledger once came through the constructor intact and then threw
+    /// out of the first read the window did, killing the app at startup with a
+    /// stack trace and no window: past the one place that knows how to recover.
+    /// </para>
+    /// <para>
+    /// <c>integrity_check</c> rather than <c>quick_check</c>, because the damage
+    /// seen in practice was indexes disagreeing with their tables, and that is
+    /// exactly the class of fault <c>quick_check</c> skips. It is capped at ten
+    /// errors: this runs on every start, the node's database is a few hundred
+    /// kilobytes, and one error is already enough to condemn the file.
+    /// </para>
+    /// </remarks>
+    private static void CheckIntegrity(SqliteConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "PRAGMA integrity_check(10)";
+
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            string line = reader.GetString(0);
+            if (!string.Equals(line, "ok", StringComparison.Ordinal))
+            {
+                // Thrown as the same exception the caller already knows how to
+                // answer, so a file that fails here is quarantined by exactly
+                // the path a file that would not open at all takes.
+                throw new SqliteException($"integrity check failed: {line}", 11);
+            }
+        }
+    }
+
+    /// <summary>
     /// Moves a database we cannot open out of the way, and reports where it went.
     /// </summary>
     /// <remarks>
@@ -113,7 +156,11 @@ public sealed class NodeStore : IDisposable
     /// </remarks>
     private static string Quarantine(string databasePath, SqliteException cause)
     {
-        string stamp = DateTimeOffset.UtcNow.ToString("yyyyMMddHHmmss");
+        // Invariant, or a Thai machine names the file in the Buddhist era and
+        // the owner sends support a node.db.corrupt-2569... that reads as being
+        // from the year 2569. The stamp exists to be compared with a date in a
+        // log; it has to mean the same thing on every node in the fleet.
+        string stamp = DateTimeOffset.UtcNow.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture);
         string kept = $"{databasePath}.corrupt-{stamp}";
 
         SqliteConnection.ClearAllPools();
@@ -453,7 +500,28 @@ public sealed class NodeStore : IDisposable
         }
     }
 
+    /// <remarks>
+    /// Reading history must never be able to take the node down. The window
+    /// builds its Activity Log screen from this while it is still starting up,
+    /// so a database that goes bad after it was opened — a bad sector, a host
+    /// that lost power mid-write — used to surface here as an unhandled
+    /// exception through the view model's constructor, and the owner got no
+    /// window at all. Losing the list is a screen with nothing in it; throwing
+    /// is a client that will not open.
+    /// </remarks>
     public IReadOnlyList<LogEntry> RecentLog(int limit = 500, string? channelFilter = null, bool warningsOnly = false)
+    {
+        try
+        {
+            return ReadLog(limit, channelFilter, warningsOnly);
+        }
+        catch (SqliteException)
+        {
+            return [];
+        }
+    }
+
+    private IReadOnlyList<LogEntry> ReadLog(int limit, string? channelFilter, bool warningsOnly)
     {
         using var connection = Open();
         using var command = connection.CreateCommand();

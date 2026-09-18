@@ -117,7 +117,12 @@ AppDomain.CurrentDomain.ProcessExit += (_, _) => stopping.Cancel();
 // Hardware project, which the WPF app wires in. The Linux build gets an
 // nvidia-smi source later. Until then the pool sees this node's presence and
 // jobs, just not its temperatures.
-var host = new NodeHost(options, telemetry: null, activity: null, alsoLogTo: new ConsoleLog());
+// No GPU sensing and no user-activity sensing here — those need Win32, and this
+// binary is the one that also runs on Linux. The power ceiling is not Win32
+// though: it comes from the driver's own tool, and a headless node that cannot
+// report it is a node whose score nobody can explain.
+var host = new NodeHost(options, telemetry: null, activity: null,
+    alsoLogTo: new ConsoleLog(), health: new NvidiaPowerHealth());
 host.UpdateReady += () => stopping.Cancel();
 
 await host.RunAsync(stopping.Token);

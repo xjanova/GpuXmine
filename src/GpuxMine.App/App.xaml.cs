@@ -35,7 +35,8 @@ public partial class App : Application
         // The window opens even when the node is not configured yet: the
         // Settings screen is where the owner fixes that. Only the relay
         // connection needs the worker id and token.
-        _host = new NodeHost(options, new GpuTelemetry(), new UserActivity());
+        _host = new NodeHost(options, new GpuTelemetry(), new UserActivity(),
+            health: new WindowsHostHealth());
         _host.UpdateReady += () => Dispatcher.BeginInvoke(ShutdownForUpdate);
 
         _vm = new MainViewModel(_host, Dispatcher);

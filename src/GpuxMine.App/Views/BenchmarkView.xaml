@@ -19,6 +19,71 @@
                             IsEnabled="{Binding BenchmarkRunning, Converter={StaticResource Not}}" Margin="0,12,0,0" Width="200"/>
                 </StackPanel>
             </Border>
+            <!-- Only while a measurement is actually running -->
+            <Border Style="{StaticResource ChromePanelStyle}" Margin="0,13,0,0"
+                    Visibility="{Binding ShowAssessmentProgress, Converter={StaticResource Vis}}">
+                <StackPanel>
+                    <Grid Margin="0,0,0,8">
+                        <TextBlock Text="กำลังประเมิน" Style="{StaticResource SectionLabel}" Margin="0"/>
+                        <TextBlock Style="{StaticResource Mono}" FontSize="13" HorizontalAlignment="Right"
+                                   Foreground="{StaticResource GoldAccentText}">
+                            <Run Text="{Binding AssessmentOverallPercent, Mode=OneWay}"/><Run Text="%"/>
+                        </TextBlock>
+                    </Grid>
+
+                    <!-- The overall bar, thicker than the per-stage ones so it reads first -->
+                    <ProgressBar Style="{StaticResource Bar}" Height="12" Minimum="0" Maximum="100"
+                                 Value="{Binding AssessmentOverallPercent, Mode=OneWay}"/>
+                    <TextBlock Text="{Binding AssessmentStageText}" Style="{StaticResource Body}"
+                               TextWrapping="Wrap" Margin="0,7,0,0"/>
+
+                    <Border Height="1" Background="{StaticResource ChromeBorderLight}" Margin="0,11,0,9"/>
+
+                    <ItemsControl ItemsSource="{Binding AssessmentSteps}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel Margin="0,0,0,9">
+                                    <Grid Margin="0,0,0,4">
+                                        <TextBlock Text="{Binding Label}" TextWrapping="Wrap" Margin="0,0,54,0">
+                                            <TextBlock.Style>
+                                                <!-- A stage nobody has reached yet is greyed; the
+                                                     one running is the only one in full ink. -->
+                                                <Style TargetType="TextBlock" BasedOn="{StaticResource Body}">
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding Status}" Value="pending">
+                                                            <Setter Property="Foreground" Value="{StaticResource InkMuted}"/>
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding Status}" Value="running">
+                                                            <Setter Property="FontWeight" Value="SemiBold"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                        <TextBlock Text="{Binding PercentText}" Style="{StaticResource Mono}" FontSize="11"
+                                                   HorizontalAlignment="Right" VerticalAlignment="Top"
+                                                   Foreground="{StaticResource InkLabel}"/>
+                                    </Grid>
+                                    <ProgressBar Height="6" Minimum="0" Maximum="100"
+                                                 Value="{Binding Percent, Mode=OneWay}">
+                                        <ProgressBar.Style>
+                                            <!-- Green once the stage is done, gold while it runs -->
+                                            <Style TargetType="ProgressBar" BasedOn="{StaticResource Bar}">
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding Status}" Value="done">
+                                                        <Setter Property="Foreground" Value="{StaticResource GreenFill}"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </ProgressBar.Style>
+                                    </ProgressBar>
+                                </StackPanel>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+            </Border>
+
             <Border Style="{StaticResource ChromePanelStyle}" Margin="0,13,0,0">
                 <StackPanel>
                     <TextBlock Text="ผลการประเมิน" Style="{StaticResource SectionLabel}"/>
@@ -46,13 +111,23 @@
                                         <ColumnDefinition Width="*"/>
                                     </Grid.ColumnDefinitions>
                                     <TextBlock Grid.Column="0" Text="{Binding Kind}" Style="{StaticResource Body}"/>
-                                    <TextBlock Grid.Column="1" Text="{Binding Verdict}" FontSize="11">
+                                    <TextBlock Grid.Column="1" Text="{Binding Verdict}" FontSize="11" TextWrapping="Wrap">
                                         <TextBlock.Style>
+                                            <!-- Three states, three colours: red is the only one
+                                                 that means no work and no earnings. -->
                                             <Style TargetType="TextBlock" BasedOn="{StaticResource Mono}">
                                                 <Setter Property="Foreground" Value="#8a2f2f"/>
                                                 <Style.Triggers>
-                                                    <DataTrigger Binding="{Binding CanRun}" Value="True">
+                                                    <DataTrigger Binding="{Binding Lane}" Value="full">
                                                         <Setter Property="Foreground" Value="#1f6b3a"/>
+                                                    </DataTrigger>
+                                                    <DataTrigger Binding="{Binding Lane}" Value="slow">
+                                                        <Setter Property="Foreground" Value="#8a6a1a"/>
+                                                    </DataTrigger>
+                                                    <!-- On trust, not yet earned: stated in blue rather
+                                                         than in the green of a lane backed by real jobs. -->
+                                                    <DataTrigger Binding="{Binding Provisional}" Value="True">
+                                                        <Setter Property="Foreground" Value="#2f5d8a"/>
                                                     </DataTrigger>
                                                 </Style.Triggers>
                                             </Style>
@@ -65,7 +140,32 @@
                     </ItemsControl>
 
                     <TextBlock Style="{StaticResource Muted}" Margin="0,10,0,0" TextWrapping="Wrap"
-                               Text="ระบบจะไม่ส่งงานประเภทที่เครื่องนี้ทำไม่ไหวมาให้ — ทั้งเพราะ VRAM ไม่พอ ไม่มีโมเดลที่ต้องใช้ หรือช้ากว่าเครื่องอ้างอิงมากเกินไปจนลูกค้ารอไม่ไหว"/>
+                               Text="รอบแรกเครื่องได้เต็มความเร็วไว้ก่อนทุกงานที่ VRAM และโมเดลพร้อม แล้วระบบจะปรับตามเวลาจริงเมื่อทำงานครบ 3 ชิ้น — เร็วกว่าที่คาดก็อยู่เต็มความเร็วต่อ ช้ากว่าก็ลงมาเป็น &quot;งานไม่เร่ง&quot; ซึ่งยังได้งานและได้เงิน แค่เป็นงานที่ไม่มีคนนั่งรอ ส่วน &quot;รับไม่ได้&quot; คือทำไม่ได้จริง ๆ"/>
+                </StackPanel>
+            </Border>
+
+            <!-- Hidden entirely on a healthy node, so its presence means something -->
+            <Border Style="{StaticResource ChromePanelStyle}" Margin="0,13,0,0"
+                    Visibility="{Binding HasAssessmentWarnings, Converter={StaticResource Vis}}">
+                <StackPanel>
+                    <TextBlock Text="ข้อสังเกตเรื่องเครื่อง" Style="{StaticResource SectionLabel}"/>
+                    <ItemsControl ItemsSource="{Binding AssessmentWarnings}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Grid Margin="0,4">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="18"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="!" Style="{StaticResource Mono}" FontSize="13"
+                                               Foreground="#b0741a" FontWeight="Bold" VerticalAlignment="Top"/>
+                                    <TextBlock Grid.Column="1" Text="{Binding}" Style="{StaticResource Body}" TextWrapping="Wrap"/>
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <TextBlock Style="{StaticResource Muted}" Margin="0,8,0,0" TextWrapping="Wrap"
+                               Text="ทั้งหมดนี้มีผลกับคะแนน แต่ไม่ได้ทำให้เครื่องรับงานไม่ได้ — แก้แล้วประเมินใหม่ คะแนนจะขึ้นเอง"/>
                 </StackPanel>
             </Border>
 

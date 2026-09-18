@@ -45,6 +45,7 @@ public sealed class NodeHost : IAsyncDisposable
 
     private readonly ITelemetrySource _telemetry;
     private readonly IUserActivitySource _activity;
+    private readonly IHostHealthSource _health;
     private readonly XmanStudioClient _studio;
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(20) };
     private readonly CancellationTokenSource _hostCts = new();
@@ -76,7 +77,8 @@ public sealed class NodeHost : IAsyncDisposable
         NodeOptions options,
         ITelemetrySource? telemetry = null,
         IUserActivitySource? activity = null,
-        ILoggerish? alsoLogTo = null)
+        ILoggerish? alsoLogTo = null,
+        IHostHealthSource? health = null)
     {
         Options = options;
 
@@ -99,6 +101,7 @@ public sealed class NodeHost : IAsyncDisposable
         var nothing = new NullTelemetry();
         _telemetry = telemetry ?? nothing;
         _activity = activity ?? nothing;
+        _health = health ?? nothing;
 
         Runtime = new ComfyRuntime(options, Log, Decide);
         Runtime.Job += OnJobEvent;
@@ -391,7 +394,12 @@ public sealed class NodeHost : IAsyncDisposable
             Reevaluate();
             Log.Info("[gpu] กำลังประเมินเครื่อง — วัดความเร็วการ์ดจอด้วยงานมาตรฐาน");
 
-            using var assessor = new Assessor(Options, Log, Store);
+            // Straight into the shared state: the window already redraws on
+            // every change it publishes, so the bars follow without a second
+            // path into the UI thread.
+            var steps = new Progress<AssessmentProgress>(State.SetAssessmentProgress);
+
+            using var assessor = new Assessor(Options, Log, Store, _health, steps);
             AssessmentReport report = await assessor.RunAsync(
                 SelfUpdater.CurrentVersion, _hardwareHash.Value, State.Gpu.Driver, ct);
 
@@ -402,8 +410,18 @@ public sealed class NodeHost : IAsyncDisposable
             catch (Exception ex) { Log.Warn($"[gpu] could not store the assessment: {ex.Message}"); }
 
             Log.Info($"[gpu] {report.Summary()}");
-            foreach (var capability in report.Capabilities.Where(c => !c.CanRun))
-                Log.Info($"[gpu] งาน {capability.Kind}: รับไม่ได้ — {capability.Reason}");
+
+            // Said before the per-job lines, because a capped card or a host
+            // that has been falling over explains most of what follows.
+            foreach (string warning in report.Warnings)
+                Log.Warn($"[gpu] {warning}");
+
+            foreach (var capability in report.Capabilities.Where(c => c.Lane != "full"))
+            {
+                Log.Info(capability.Lane == "slow"
+                    ? $"[gpu] งาน {capability.Kind}: รับได้แบบไม่เร่ง — {capability.Reason}"
+                    : $"[gpu] งาน {capability.Kind}: รับไม่ได้ — {capability.Reason}");
+            }
 
             return report;
         }
@@ -630,6 +648,7 @@ public sealed class NodeHost : IAsyncDisposable
             case JobStatus.Completed:
                 Jobs.Finished(e.PromptId, true, e.Filename, null);
                 Log.Info($"[job] completed {Short(e.PromptId)}{(e.Filename is null ? "" : $" → {e.Filename}")}");
+                Retune();
                 break;
             case JobStatus.Failed:
                 Jobs.Finished(e.PromptId, false, null, e.Error);
@@ -637,6 +656,46 @@ public sealed class NodeHost : IAsyncDisposable
                 break;
         }
         State.SetCurrentJob(Jobs.Current);
+    }
+
+    /// <summary>
+    /// Re-grades the stored report against the ledger now that one more job has
+    /// been timed, and says so only when a lane actually moved.
+    /// </summary>
+    /// <remarks>
+    /// The other half of starting every node at the top bar. A machine is given
+    /// the fast lane on trust, and this is what takes it away — or gives it
+    /// back, when the machine turns out to be quicker than the estimate said.
+    /// No GPU work, so it is safe to run on the job thread.
+    /// </remarks>
+    private void Retune()
+    {
+        if (Assessment is not { } report) return;
+
+        try
+        {
+            if (!Assessor.Regrade(report, Store)) return;
+
+            Assessor.Save(Store, report);
+            State.SetAssessment(report);
+            Reevaluate();
+
+            foreach (var capability in report.Capabilities.Where(c => c.Reason is not null && !c.Provisional))
+            {
+                Log.Info(capability.Lane switch
+                {
+                    "full" => $"[gpu] งาน {capability.Kind}: เลื่อนขึ้นเต็มความเร็ว — {capability.Reason}",
+                    "slow" => $"[gpu] งาน {capability.Kind}: ปรับลงเป็นงานไม่เร่ง — {capability.Reason}",
+                    _ => $"[gpu] งาน {capability.Kind}: หยุดรับ — {capability.Reason}",
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            // Grading is a convenience over a report that is already valid;
+            // failing it must never cost the node the job it just finished.
+            Log.Warn($"[gpu] could not re-grade after the job: {ex.Message}");
+        }
     }
 
     private static string Short(string id) => id.Length > 8 ? id[..8] : id;

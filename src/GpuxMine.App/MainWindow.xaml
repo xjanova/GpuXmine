@@ -106,11 +106,18 @@
 
                     <!-- Sidebar -->
                     <Border Grid.Column="0" Background="{StaticResource Sidebar}" BorderBrush="{StaticResource SidebarBorder}" BorderThickness="0,0,1,0" Padding="10,12">
-                        <DockPanel LastChildFill="False">
-                            <!-- รายการเมนูเลื่อนได้ ส่วน POOL LINK ปักอยู่ล่างสุดเสมอ
-                                 หน้าต่างเตี้ยกว่าเนื้อหาเมื่อไร ของล่างสุดจะถูกตัดหายเงียบ ๆ
-                                 ซึ่งพอดีเป็นไฟบอกสถานะการเชื่อมต่อ = ชิ้นที่ต้องเห็นที่สุด -->
-                            <ScrollViewer DockPanel.Dock="Top" VerticalScrollBarVisibility="Auto"
+                        <!-- Grid ไม่ใช่ DockPanel: DockPanel วัดลูกที่ Dock=Top ด้วยความสูง
+                             ไม่จำกัด ScrollViewer ข้างในจึงขอความสูงเท่าเนื้อหาทั้งก้อน
+                             แล้วไม่เลื่อนเลย ซ้ำยังดันความสูงขั้นต่ำของหน้าต่างจนย่อไม่ลง
+                             แถว * บีบได้จริง ส่วน POOL LINK อยู่แถว Auto ปักล่างสุดเสมอ
+                             หน้าต่างเตี้ยกว่าเนื้อหาเมื่อไร ของล่างสุดจะถูกตัดหายเงียบ ๆ
+                             ซึ่งพอดีเป็นไฟบอกสถานะการเชื่อมต่อ = ชิ้นที่ต้องเห็นที่สุด -->
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="*"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto"
                                           HorizontalScrollBarVisibility="Disabled" Focusable="False">
                             <StackPanel>
                                 <TextBlock Text="CONSOLE" FontSize="10" FontWeight="Bold" Foreground="{StaticResource InkLabel}" Margin="2,0,0,8"/>
@@ -139,7 +146,7 @@
                             </ScrollViewer>
 
                             <!-- POOL LINK -->
-                            <Border DockPanel.Dock="Bottom" Style="{StaticResource LcdPanelStyle}" Padding="10,8">
+                            <Border Grid.Row="1" Margin="0,12,0,0" Style="{StaticResource LcdPanelStyle}" Padding="10,8">
                                 <StackPanel>
                                     <StackPanel Orientation="Horizontal">
                                         <Ellipse x:Name="PoolLed" Width="8" Height="8" Margin="0,0,7,0" VerticalAlignment="Center">
@@ -163,7 +170,7 @@
                                     <TextBlock Text="tasks in ▸ results out" Style="{StaticResource LcdLabelText}"/>
                                 </StackPanel>
                             </Border>
-                        </DockPanel>
+                        </Grid>
                     </Border>
 
                     <!-- Content -->

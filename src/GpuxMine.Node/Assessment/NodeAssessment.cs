@@ -7,6 +7,21 @@ public sealed class Capability
 {
     [JsonPropertyName("kind")] public string Kind { get; set; } = "";
     [JsonPropertyName("canRun")] public bool CanRun { get; set; }
+
+    /// <summary>
+    /// Which lane this machine earns for this kind of work: <c>full</c> inside
+    /// the normal deadline, <c>slow</c> inside the relaxed one, <c>no</c> when
+    /// it cannot do the work at all.
+    /// </summary>
+    /// <remarks>
+    /// A single pass/fail bar threw away every machine that was merely slow,
+    /// which on a network built out of home cards is most of them. Missing the
+    /// fast lane is a lower score and a job nobody is waiting on, not a closed
+    /// door. Only three things still close it: the weights do not fit at all,
+    /// the models are not on disk, or the machine is past even the slow lane.
+    /// </remarks>
+    [JsonPropertyName("lane")] public string Lane { get; set; } = "no";
+
     /// <summary>Why not — shown to the owner, so "no video work" is never a mystery.</summary>
     [JsonPropertyName("reason")] public string? Reason { get; set; }
     /// <summary>Measured seconds for one unit, where the node was able to run it.</summary>
@@ -16,6 +31,18 @@ public sealed class Capability
 
     /// <summary>"measured" once this node's own ledger has enough of these jobs; "estimated" until then.</summary>
     [JsonPropertyName("source")] public string Source { get; set; } = "estimated";
+
+    /// <summary>
+    /// This lane was given on trust, not earned: the machine has not yet run
+    /// enough jobs of this kind for its own ledger to have an opinion.
+    /// </summary>
+    /// <remarks>
+    /// A new node starts at the top bar and is graded down by what it actually
+    /// does, rather than being sorted on the day it arrives by an extrapolation
+    /// from a three-second blur. The estimate is a guess about hardware; the
+    /// ledger is a fact about this machine.
+    /// </remarks>
+    [JsonPropertyName("provisional")] public bool Provisional { get; set; }
 }
 
 /// <summary>
@@ -53,8 +80,17 @@ public sealed class NodeAssessment
     /// 3: audio was missing entirely. Three of the five models the platform
     /// actually dispatches are music, and no node could ever be matched to one
     /// because none of them said they could do it.
+    ///
+    /// 4: the report says nothing about whether the host can keep the card fed.
+    /// A power-capped card and a host that has been losing power under load are
+    /// both invisible to a timing, and both change what the timing means.
+    ///
+    /// 5: lanes are no longer handed out by extrapolating a three-second blur.
+    /// A node starts every kind of work at the top bar and is graded by its own
+    /// finished jobs, so a version 4 verdict was reached a different way and is
+    /// not comparable with a version 5 one.
     /// </remarks>
-    public const int SchemaVersion = 3;
+    public const int SchemaVersion = 5;
 
     [JsonPropertyName("schemaVersion")] public int Version { get; set; } = SchemaVersion;
     [JsonPropertyName("agentVersion")] public string AgentVersion { get; set; } = "";
@@ -80,6 +116,53 @@ public sealed class NodeAssessment
 
     /// <summary>Ties this report to the machine it was measured on — a report cannot be moved to a slower PC.</summary>
     [JsonPropertyName("hardwareHash")] public string? HardwareHash { get; set; }
+
+    // --- whether the host can keep the card fed ---
+
+    /// <summary>Watts the card is allowed to draw, and what it is rated for. 0 when unread.</summary>
+    /// <remarks>
+    /// The card this client was built on was held at 90 W against a 180 W
+    /// rating. Every number ever measured on it is therefore a half-power
+    /// number — the benchmark is still right about what this machine will do,
+    /// but it says nothing about what the model of card can do, and the two had
+    /// been confused. Recording both makes a slow score explainable instead of
+    /// mysterious, and tells the owner about a setting they may not know is on.
+    /// </remarks>
+    [JsonPropertyName("powerLimitW")] public int PowerLimitW { get; set; }
+
+    /// <inheritdoc cref="PowerLimitW"/>
+    [JsonPropertyName("powerDefaultW")] public int PowerDefaultW { get; set; }
+
+    /// <summary>Times this host lost power without shutting down, in the week before the assessment.</summary>
+    /// <remarks>
+    /// A node that dies mid-render loses the customer's job and the owner's
+    /// payout, and until this field existed nothing recorded that it had
+    /// happened. It does not disqualify a machine on its own — someone may
+    /// simply have pulled the plug — which is why it is reported rather than
+    /// enforced.
+    /// </remarks>
+    [JsonPropertyName("hardShutdowns")] public int HardShutdowns { get; set; }
+
+    /// <inheritdoc cref="HardShutdowns"/>
+    [JsonPropertyName("lastHardShutdown")] public DateTimeOffset? LastHardShutdown { get; set; }
+
+    /// <summary>
+    /// Things that are true and worth saying out loud, but are not a reason to
+    /// refuse work. Shown to the owner in their own language.
+    /// </summary>
+    [JsonPropertyName("warnings")] public List<string> Warnings { get; set; } = [];
+
+    /// <summary>The card is held below what it was built to draw, so its timings are not this model's timings.</summary>
+    [JsonIgnore]
+    public bool PowerCapped =>
+        PowerLimitW > 0 && PowerDefaultW > 0 && PowerLimitW < PowerDefaultW * 0.95;
+
+    /// <summary>Share of the factory power rating this card is allowed, as a percentage. 0 when unread.</summary>
+    [JsonIgnore]
+    public int PowerPct =>
+        PowerLimitW > 0 && PowerDefaultW > 0
+            ? (int)Math.Round(PowerLimitW * 100.0 / PowerDefaultW)
+            : 0;
 
     // --- what it actually ran ---
     /// <summary>Seconds for the weight-free reference workload. The one number every node has.</summary>
@@ -122,5 +205,7 @@ public sealed class NodeAssessment
         Failed is not null
             ? $"assessment failed: {Failed}"
             : $"{GpuName ?? "GPU"} · {VramTotalMb / 1024.0:0.#} GB · score {Score} · tier {Tier} · " +
-              $"{Capabilities.Count(c => c.CanRun)}/{Capabilities.Count} job kinds";
+              $"{Capabilities.Count(c => c.Lane == "full")} เต็มความเร็ว + " +
+              $"{Capabilities.Count(c => c.Lane == "slow")} ไม่เร่ง / {Capabilities.Count} งาน" +
+              (PowerCapped ? $" · ไฟ {PowerPct}%" : "");
 }

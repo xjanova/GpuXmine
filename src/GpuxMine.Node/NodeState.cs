@@ -54,6 +54,10 @@ public sealed class NodeState
     /// <summary>True while the benchmark is running — the card is busy with it, so no job is taken.</summary>
     public bool Assessing { get; private set; }
 
+    /// <summary>Which stage the running assessment is on, and how far through. Empty when none is running.</summary>
+    public Assessment.AssessmentProgress AssessmentProgress { get; private set; }
+        = GpuxMine.Node.Assessment.AssessmentProgress.None;
+
     public TimeSpan Uptime => SessionStartedAt is { } s ? DateTimeOffset.Now - s : TimeSpan.Zero;
 
     // --- mutation, only from the host --------------------------------------
@@ -81,4 +85,5 @@ public sealed class NodeState
     internal void SetEarnedToday(decimal? thb) => Set(s => s.EarnedTodayThb = thb);
     internal void SetAssessment(Assessment.NodeAssessment? a) => Set(s => s.Assessment = a);
     internal void SetAssessing(bool busy) => Set(s => s.Assessing = busy);
+    internal void SetAssessmentProgress(Assessment.AssessmentProgress p) => Set(s => s.AssessmentProgress = p);
 }

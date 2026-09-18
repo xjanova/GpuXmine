@@ -623,18 +623,95 @@ public sealed class MainViewModel : ObservableObject
             _ => c.Kind,
         };
         public bool CanRun { get; } = c.CanRun;
-        public string Verdict { get; } = c.CanRun ? "รับงานได้" : "รับไม่ได้";
-        public string Detail { get; } = c.CanRun
+
+        /// <summary>"full", "slow" or "no" — the three colours this row is drawn in.</summary>
+        public string Lane { get; } = c.Lane;
+
+        /// <summary>The lane was given on trust and has not been earned on real jobs yet.</summary>
+        public bool Provisional { get; } = c.Provisional;
+
+        public string Verdict { get; } = c.Lane switch
+        {
+            // Said out loud, because a lane on trust and a lane earned on
+            // thirty finished jobs are not the same promise.
+            "full" when c.Provisional => "รับงานได้ · รอบแรก",
+            "full" => "รับงานได้",
+            // Not a failure and not a full pass. A machine in the slow lane
+            // still earns, on work with nobody waiting on the other end.
+            "slow" => "งานไม่เร่ง",
+            _ => "รับไม่ได้",
+        };
+
+        public string Detail { get; } = c.Lane == "full" && !c.Provisional
             ? $"ประมาณ {c.SecondsPerUnit:0.#} วินาที/ชิ้น"
-            : c.Reason ?? "";
+            : c.Reason ?? $"ประมาณ {c.SecondsPerUnit:0.#} วินาที/ชิ้น";
     }
 
+    /// <summary>
+    /// What is true about this machine and costs it score, without stopping it
+    /// working. Empty on a healthy node, and the panel hides itself.
+    /// </summary>
+    public ObservableCollection<string> AssessmentWarnings { get; } = [];
+
+    public bool HasAssessmentWarnings => AssessmentWarnings.Count > 0;
+
+    // ------------------------------------------------- assessment in progress
+
+    /// <summary>One row per stage while the assessment runs, each with its own bar.</summary>
+    public ObservableCollection<StepRow> AssessmentSteps { get; } = [];
+
+    public sealed class StepRow(GpuxMine.Node.Assessment.AssessmentStep s)
+    {
+        public string Key { get; } = s.Key;
+        public string Label { get; } = s.Label;
+        public int Percent { get; } = s.Percent;
+        public string Status { get; } = s.Status;
+
+        /// <summary>The number beside the bar. A stage nobody has reached yet shows nothing, not "0%".</summary>
+        public string PercentText { get; } = s.Status == "pending" ? "รอคิว" : $"{s.Percent}%";
+    }
+
+    public int AssessmentOverallPercent { get; private set; }
+    public string AssessmentStageText { get; private set; } = "";
+
+    /// <summary>The panel is only up while a measurement is actually running.</summary>
+    public bool ShowAssessmentProgress => BenchmarkRunning && AssessmentSteps.Count > 0;
+
     private GpuxMine.Node.Assessment.NodeAssessment? _shownAssessment;
+    private GpuxMine.Node.Assessment.AssessmentProgress? _shownSteps;
+
+    /// <summary>
+    /// Rebuilds the stage rows only when the host has published a new snapshot.
+    /// </summary>
+    /// <remarks>
+    /// This runs on every state change, and a bar that is torn down and rebuilt
+    /// on each one flickers all the way through the measurement — the same
+    /// reason the capability list is rebuilt by identity rather than on a tick.
+    /// </remarks>
+    private void RefreshAssessmentSteps()
+    {
+        var steps = _host.State.AssessmentProgress;
+        if (ReferenceEquals(steps, _shownSteps)) return;
+        _shownSteps = steps;
+
+        AssessmentOverallPercent = steps.OverallPercent;
+        AssessmentStageText = steps.Current;
+
+        AssessmentSteps.Clear();
+        foreach (var step in steps.Steps)
+            AssessmentSteps.Add(new StepRow(step));
+
+        Raise(nameof(AssessmentOverallPercent));
+        Raise(nameof(AssessmentStageText));
+        Raise(nameof(ShowAssessmentProgress));
+    }
 
     private void RefreshAssessment()
     {
         var report = _host.State.Assessment;
         BenchmarkRunning = _host.State.Assessing;
+
+        RefreshAssessmentSteps();
 
         if (BenchmarkRunning && _shownAssessment is null)
         {
@@ -649,6 +726,7 @@ public sealed class MainViewModel : ObservableObject
         _shownAssessment = report;
 
         Capabilities.Clear();
+        AssessmentWarnings.Clear();
         if (report is null)
         {
             AssessmentScore = 0;
@@ -660,6 +738,10 @@ public sealed class MainViewModel : ObservableObject
 
         foreach (var capability in report.Capabilities)
             Capabilities.Add(new CapabilityRow(capability));
+
+        foreach (string warning in report.Warnings)
+            AssessmentWarnings.Add(warning);
+        Raise(nameof(HasAssessmentWarnings));
 
         if (report.Failed is not null)
         {
@@ -676,6 +758,11 @@ public sealed class MainViewModel : ObservableObject
         BenchmarkText =
             $"{report.GpuName ?? "GPU"} · VRAM {report.VramTotalMb / 1024.0:0.#} GB\n" +
             $"งานอ้างอิง {report.ReferenceSeconds:0.00} วินาที (เครื่องอ้างอิง {GpuxMine.Node.Assessment.Assessor.ReferenceBaselineSeconds:0.0} วินาที)\n" +
+            // Only when it was actually read: a card that says nothing about
+            // its power limits should not get a line claiming it did.
+            (report.PowerDefaultW > 0
+                ? $"เพดานไฟการ์ด {report.PowerLimitW} W จากสเปค {report.PowerDefaultW} W ({report.PowerPct}%)\n"
+                : "") +
             $"โมเดลในเครื่อง: checkpoint {report.Checkpoints.Count} · upscaler {report.Upscalers.Count} · diffusion {report.DiffusionModels.Count}\n" +
             $"วัดเมื่อ {report.MeasuredAt.ToLocalTime():yyyy-MM-dd HH:mm}";
     }
@@ -703,6 +790,7 @@ public sealed class MainViewModel : ObservableObject
         Raise(nameof(BenchmarkRunning)); Raise(nameof(BenchmarkText)); Raise(nameof(BenchmarkNote));
         Raise(nameof(AssessmentScore)); Raise(nameof(AssessmentScoreText));
         Raise(nameof(AssessmentTier)); Raise(nameof(AssessmentGaugeValue));
+        Raise(nameof(ShowAssessmentProgress));
     }
 
     // ------------------------------------------------------------ links
