@@ -18,7 +18,34 @@ string adminKey = builder.Configuration["Relay:AdminKey"]
 builder.Services.AddSingleton(new WorkerStore(storePath));
 builder.Services.AddSingleton<AgentRegistry>();
 
+// Behind a reverse proxy the relay sees plain HTTP on localhost, and the
+// enrolment reply is built from the request's own scheme and host. Without
+// this it hands every node `ws://relay…/agent` and every endpoint
+// `http://relay…/w/…` — the agent would connect unencrypted over the open
+// internet, and aixman rejects a non-HTTPS endpoint outright, so a node would
+// enrol and then never be dispatched to.
+//
+// Opt-in, because trusting X-Forwarded-* from anyone lets a caller claim any
+// scheme and host it likes. Set Relay:TrustProxy only where a proxy really is
+// in front.
+bool trustProxy = builder.Configuration.GetValue("Relay:TrustProxy", false);
+if (trustProxy)
+{
+    builder.Services.Configure<Microsoft.AspNetCore.Builder.ForwardedHeadersOptions>(options =>
+    {
+        options.ForwardedHeaders = Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedProto
+                                 | Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedHost
+                                 | Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedFor;
+        // The proxy is on the same machine and is the only hop we accept these
+        // from; the defaults would refuse anything not in a known-proxy list.
+        options.KnownIPNetworks.Clear();
+        options.KnownProxies.Clear();
+    });
+}
+
 var app = builder.Build();
+
+if (trustProxy) app.UseForwardedHeaders();
 var log = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("relay");
 
 if (builder.Configuration["Relay:AdminKey"] is null && Environment.GetEnvironmentVariable("GPUXMINE_ADMIN_KEY") is null)
@@ -75,7 +102,11 @@ app.MapPost("/enroll", (HttpRequest request, WorkerStore store) =>
     {
         workerId = record.WorkerId,
         token,
-        agentRelayUrl = origin.Replace("http", "ws", StringComparison.Ordinal) + "/agent",
+        // Spelled out rather than a string replace: this is the URL every node
+        // in the fleet dials for the life of its enrolment, and "https" → "wss"
+        // by substring is the kind of cleverness that silently produces
+        // "ws://" the day a host contains those four letters.
+        agentRelayUrl = (request.IsHttps ? "wss://" : "ws://") + request.Host + "/agent",
         // Exactly what goes into ai_gpu_workers.endpoint on the aixman side.
         aixmanEndpoint = $"{origin}/w/{record.WorkerId}",
     });

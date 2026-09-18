@@ -1,0 +1,54 @@
+[Unit]
+Description=GPUxMINE relay — เครื่องที่บ้านคนโทรเข้ามาที่นี่
+Documentation=https://github.com/xjanova/GpuXmine
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+# Self-contained .NET publish: no runtime to install, nothing to keep in step
+# with the distro's packages.
+ExecStart=/opt/gpuxmine-relay/current/GpuxMine.Relay
+WorkingDirectory=/opt/gpuxmine-relay/current
+
+# Localhost only. The reverse proxy in front is what terminates TLS and what
+# the open internet can reach; binding this publicly would expose a relay whose
+# only auth on /w/ is the per-worker token.
+Environment=ASPNETCORE_URLS=http://127.0.0.1:5080
+Environment=DOTNET_PRINT_TELEMETRY_MESSAGE=false
+
+# The enrolment reply is built from the request's scheme and host. Behind a
+# proxy that is localhost HTTP, so without this every node is handed a ws://
+# URL and every endpoint an http:// one — which aixman then refuses.
+Environment=Relay__TrustProxy=true
+
+# The store outlives a release: it holds every worker id and token hash in the
+# fleet. Losing it tells every node its token is invalid.
+Environment=Relay__StorePath=/var/lib/gpuxmine-relay/workers.json
+
+# The key that can enrol a worker anywhere in the network. Only XMAN Studio
+# holds the other copy. Keep it out of this file:
+#   /etc/gpuxmine-relay.env  →  GPUXMINE_ADMIN_KEY=...   (chmod 600)
+EnvironmentFile=/etc/gpuxmine-relay.env
+
+User=gpuxmine
+Group=gpuxmine
+Restart=always
+RestartSec=5
+
+# A relay that cannot write outside its own state directory is a relay that
+# cannot be turned into a foothold on the box that also serves the website.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/gpuxmine-relay
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
