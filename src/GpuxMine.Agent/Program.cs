@@ -3,6 +3,18 @@ using GpuxMine.Core.Licensing;
 using GpuxMine.Core.Updates;
 using Microsoft.Extensions.Configuration;
 
+// Windows consoles still default to a legacy code page, which turns every Thai
+// character and every em-dash in this program's output into mojibake. The whole
+// UX here is Thai, so this is the difference between readable and unusable.
+try
+{
+    Console.OutputEncoding = System.Text.Encoding.UTF8;
+}
+catch (IOException)
+{
+    // No console attached (a service, or output redirected) — nothing to set.
+}
+
 var log = new ConsoleLog();
 
 IConfigurationRoot configuration = new ConfigurationBuilder()
