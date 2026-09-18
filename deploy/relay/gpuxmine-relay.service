@@ -36,6 +36,25 @@ Group=gpuxmine
 Restart=always
 RestartSec=5
 
+# หลายร้อย websocket ค้างพร้อมกัน — ค่า default 1024 ไม่พอ
+LimitNOFILE=65535
+
+# ── เพดานทรัพยากร ───────────────────────────────────────────────────────────
+# relay อาจไปอยู่ร่วมเครื่องกับงานที่สำคัญกว่ามัน — บนเซิร์ฟเวอร์ TPIX คือ
+# validator ของบล็อกเชนที่ไวต่อ latency และเคยค้างไป 38 ชั่วโมงโดยไม่มีใครรู้
+#
+# เพดานพวกนี้ไม่ใช่การจูนประสิทธิภาพ แต่เป็นสัญญาว่า "ต่อให้ relay ถูกยิงถล่ม
+# หรือรั่ว มันก็แตะได้ไม่เกินนี้" ตัว relay เองใช้ราว 300 MB และแทบไม่กิน CPU
+# เพราะงานหนักอยู่ที่การ์ดจอของคนอื่น ที่นี่แค่ส่งไบต์ผ่าน
+CPUQuota=400%
+MemoryHigh=768M
+MemoryMax=1G
+TasksMax=512
+
+# ต่ำกว่า default (100) — ถ้าดิสก์แย่งกัน ให้ validator ได้ไปก่อน
+IOWeight=50
+Nice=5
+
 # A relay that cannot write outside its own state directory is a relay that
 # cannot be turned into a foothold on the box that also serves the website.
 NoNewPrivileges=true
