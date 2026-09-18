@@ -5,7 +5,13 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=notify
+# notify ไม่ได้ เพราะ ASP.NET Core จะส่งสัญญาณ ready กลับให้ systemd ก็ต่อเมื่อ
+# เรียก UseSystemd() ซึ่ง relay ไม่ได้เรียก — ผลคือ systemd ค้างที่ activating
+# แล้วฆ่าทิ้งเมื่อครบ TimeoutStartSec ทั้งที่ตัวโปรแกรมตอบ /healthz อยู่ดี ๆ
+# (เจอจริงตอนติดตั้งครั้งแรกบนเซิร์ฟเวอร์ TPIX)
+#
+# exec = ถือว่าขึ้นแล้วเมื่อ execve สำเร็จ ซึ่งตรงกับสิ่งที่โปรแกรมนี้รับประกันได้จริง
+Type=exec
 # Self-contained .NET publish: no runtime to install, nothing to keep in step
 # with the distro's packages.
 ExecStart=/opt/gpuxmine-relay/current/GpuxMine.Relay
