@@ -54,6 +54,18 @@ public sealed class AgentOptions
             error = $"RelayUrl must be a ws:// or wss:// URL, got '{RelayUrl}'";
             return false;
         }
+        if (!Uri.TryCreate(ComfyUrl, UriKind.Absolute, out var comfy) || comfy.Scheme is not ("http" or "https"))
+        {
+            // Caught here rather than as an unhandled exception from `new Uri`
+            // three seconds into startup, with no hint of which setting was wrong.
+            error = $"ComfyUrl must be an http:// or https:// URL, got '{ComfyUrl}'";
+            return false;
+        }
+        if (!Uri.TryCreate(XmanStudioUrl, UriKind.Absolute, out var studio) || studio.Scheme is not ("http" or "https"))
+        {
+            error = $"XmanStudioUrl must be an http:// or https:// URL, got '{XmanStudioUrl}'";
+            return false;
+        }
         error = "";
         return true;
     }

@@ -316,6 +316,18 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
                     if (promptId is null) break;
                     if (_graphs.Remove("", out var parked)) _graphs[promptId] = parked;
                     _state = new ProgressState { PromptId = promptId, Started = DateTimeOffset.UtcNow };
+
+                    // A node renders thousands of prompts over its life. Without
+                    // this the graph map grows one entry per job until the
+                    // process is restarted — a leak that only shows up on the
+                    // machines that matter most, the ones that never go down.
+                    // The last few are kept because aixman reads one final
+                    // snapshot after a render completes.
+                    while (_graphs.Count > 16)
+                    {
+                        string oldest = _graphs.Keys.First(k => k != promptId && k != "");
+                        _graphs.Remove(oldest);
+                    }
                     break;
                 }
 
@@ -332,7 +344,23 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
                     string? node = data?["node"]?.GetValue<string>();
                     if (node is null)
                     {
-                        // ComfyUI signals "nothing left to execute" with a null node.
+                        // ComfyUI signals "nothing left to execute" with a null
+                        // node. The node that was running is finished too —
+                        // without counting it here nodes_done stops one short
+                        // of nodes_total on every render (seen as 1/2 in the
+                        // first real test), and a progress bar that never
+                        // reaches 100% reads as a hung job.
+                        if (_state.ProgressNode is not null)
+                        {
+                            _state.NodesDone++;
+                            var g = _state.PromptId is null ? null : _graphs.GetValueOrDefault(_state.PromptId);
+                            if (g is not null && g.TryGetValue(_state.ProgressNode, out string? lastCls) && SamplerClass().IsMatch(lastCls))
+                            {
+                                _state.SamplersDone++;
+                                _state.SamplerEnd = DateTimeOffset.UtcNow;
+                            }
+                            _state.ProgressNode = null;
+                        }
                         _state.Done = true;
                         break;
                     }

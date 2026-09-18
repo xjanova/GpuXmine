@@ -194,6 +194,15 @@ app.Map("/w/{workerId}/{**path}", async (
     {
         return; // aixman hung up; nothing to answer.
     }
+    catch (OperationCanceledException) when (session.Closed.IsCancellationRequested)
+    {
+        // The node went away mid-request. Same answer as "never connected":
+        // aixman reads `stage: offline` as warming and keeps the worker, where
+        // a 504 would look like a slow node and count against it.
+        context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+        await context.Response.WriteAsJsonAsync(new { stage = "offline", ready = false, detail = "node disconnected" });
+        return;
+    }
     catch (OperationCanceledException)
     {
         context.Response.StatusCode = StatusCodes.Status504GatewayTimeout;

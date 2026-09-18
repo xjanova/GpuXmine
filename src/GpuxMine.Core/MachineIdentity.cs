@@ -25,6 +25,9 @@ public static class MachineIdentity
 {
     private static string? _cached;
 
+    /// <summary>How many durable facts the id was built from — 0 means the fallback was used.</summary>
+    public static int FactCount { get; private set; }
+
     public static string MachineId()
     {
         if (_cached is not null) return _cached;
@@ -33,10 +36,12 @@ public static class MachineIdentity
 
         if (OperatingSystem.IsWindows())
         {
-            // Written at install time and kept across reboots and driver churn.
-            AddIfPresent(facts, ReadRegistry(@"HKLM\SOFTWARE\Microsoft\Cryptography", "MachineGuid"));
-            AddIfPresent(facts, Wmic("csproduct", "uuid"));
-            AddIfPresent(facts, Wmic("baseboard", "serialnumber"));
+            // MachineGuid is written at install time and survives reboots and
+            // driver churn; the SMBIOS UUID and board serial tie it to hardware.
+            var windows = WindowsFacts();
+            AddIfPresent(facts, windows.MachineGuid);
+            AddIfPresent(facts, windows.SmbiosUuid);
+            AddIfPresent(facts, windows.BoardSerial);
         }
         else
         {
@@ -45,6 +50,8 @@ public static class MachineIdentity
             AddIfPresent(facts, ReadFirstLine("/var/lib/dbus/machine-id"));
             AddIfPresent(facts, ReadFirstLine("/sys/class/dmi/id/product_uuid"));
         }
+
+        FactCount = facts.Count;
 
         // A machine that gives us nothing would otherwise hash to the same id as
         // every other such machine, quietly merging them into one device.
@@ -66,7 +73,7 @@ public static class MachineIdentity
         string raw = string.Join('|', [
             Environment.ProcessorCount.ToString(),
             RuntimeInformationSafe(),
-            OperatingSystem.IsWindows() ? Wmic("cpu", "processorid") ?? "" : ReadFirstLine("/proc/cpuinfo") ?? "",
+            OperatingSystem.IsWindows() ? WindowsFacts().ProcessorId ?? "" : ReadFirstLine("/proc/cpuinfo") ?? "",
         ]);
 
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(raw))).ToLowerInvariant();
@@ -97,37 +104,66 @@ public static class MachineIdentity
         }
     }
 
-    private static string? ReadRegistry(string key, string name)
+    private sealed record WindowsMachineFacts(string? MachineGuid, string? SmbiosUuid, string? BoardSerial, string? ProcessorId);
+
+    private static WindowsMachineFacts? _windowsFacts;
+
+    /// <summary>
+    /// One PowerShell round-trip for every Windows fact we use.
+    /// </summary>
+    /// <remarks>
+    /// Not <c>wmic.exe</c>: it is gone from Windows 11 24H2 onwards (verified on
+    /// the machine this was written on), and an agent whose identity quietly
+    /// degrades on newer Windows is exactly the kind of bug nobody notices
+    /// until the device registry fills with duplicates. CIM is what replaced
+    /// it. One process for all four values because each spawn costs ~700 ms;
+    /// the result is cached for the life of the process anyway.
+    ///
+    /// Shelled out rather than referencing Microsoft.Win32.Registry or
+    /// System.Management, so this project stays platform-neutral — the Linux
+    /// agent compiles from exactly these sources.
+    /// </remarks>
+    private static WindowsMachineFacts WindowsFacts()
     {
-        if (!OperatingSystem.IsWindows()) return null;
+        if (_windowsFacts is not null) return _windowsFacts;
 
-        // Shelled out rather than referencing Microsoft.Win32.Registry so this
-        // project stays platform-neutral — the Linux agent (M3) compiles from
-        // exactly these sources.
-        string? output = Run("reg.exe", $"query \"{key}\" /v {name}");
-        if (output is null) return null;
+        const string script =
+            "$ErrorActionPreference='SilentlyContinue';" +
+            "(Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Cryptography').MachineGuid;" +
+            "(Get-CimInstance Win32_ComputerSystemProduct).UUID;" +
+            "(Get-CimInstance Win32_BaseBoard).SerialNumber;" +
+            "(Get-CimInstance Win32_Processor | Select-Object -First 1).ProcessorId";
 
-        foreach (string line in output.Split('\n'))
-        {
-            int marker = line.IndexOf("REG_SZ", StringComparison.Ordinal);
-            if (marker >= 0) return line[(marker + "REG_SZ".Length)..].Trim();
-        }
-        return null;
-    }
+        string? output = Run("powershell.exe",
+            $"-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"{script}\"",
+            timeoutMs: 8000);
 
-    private static string? Wmic(string alias, string property)
-    {
-        string? output = Run("wmic.exe", $"{alias} get {property}");
-        if (output is null) return null;
-
-        // First line is the column header, which is not a fact about this machine.
-        return output.Split('\n')
-            .Skip(1)
+        string?[] lines = (output ?? string.Empty)
+            .Split('\n')
             .Select(l => l.Trim())
-            .FirstOrDefault(l => l.Length > 0);
+            .ToArray();
+
+        // Values that mean "unknown" in SMBIOS, which are not facts about this
+        // machine and would make every such machine look identical.
+        static string? Real(string? v) =>
+            v is null || v.Length == 0
+            || v.Equals("To be filled by O.E.M.", StringComparison.OrdinalIgnoreCase)
+            || v.Equals("Default string", StringComparison.OrdinalIgnoreCase)
+            || v.Equals("None", StringComparison.OrdinalIgnoreCase)
+            || v.All(c => c == '0' || c == 'F' || c == 'f' || c == '-')
+                ? null
+                : v;
+
+        _windowsFacts = new WindowsMachineFacts(
+            MachineGuid: Real(lines.ElementAtOrDefault(0)),
+            SmbiosUuid: Real(lines.ElementAtOrDefault(1)),
+            BoardSerial: Real(lines.ElementAtOrDefault(2)),
+            ProcessorId: Real(lines.ElementAtOrDefault(3)));
+
+        return _windowsFacts;
     }
 
-    private static string? Run(string fileName, string arguments)
+    private static string? Run(string fileName, string arguments, int timeoutMs = 3000)
     {
         try
         {
@@ -144,7 +180,7 @@ public static class MachineIdentity
 
             // Never block startup on a hung helper: identity is worth a couple of
             // seconds, not a launch that appears to hang.
-            if (!process.WaitForExit(3000))
+            if (!process.WaitForExit(timeoutMs))
             {
                 try { process.Kill(entireProcessTree: true); } catch { /* already gone */ }
                 return null;

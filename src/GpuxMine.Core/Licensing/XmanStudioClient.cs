@@ -92,11 +92,14 @@ public sealed class XmanStudioClient(HttpClient http, string baseUrl, string pro
             var body = await ReadAsync<LicenseEnvelope>(response, ct);
             if (body is null) return LicenseState.Unknown("อ่านคำตอบจากเซิร์ฟเวอร์ไม่ได้");
 
+            // The server's verdict is `is_valid` (status active, not expired, and
+            // bound to this machine). `data.status` alone would say "active" for
+            // a key that is active on somebody else's PC.
             return new LicenseState(
-                body.Success && string.Equals(body.Status, "active", StringComparison.OrdinalIgnoreCase),
-                body.Status,
-                body.Plan,
-                body.ExpiresAt,
+                body.Success && body.IsValid,
+                body.Data?.Status ?? (body.Success ? null : "invalid"),
+                body.Data?.LicenseType,
+                body.Data?.ExpiresAt,
                 body.Message);
         }
         catch (Exception ex)
@@ -122,10 +125,13 @@ public sealed class XmanStudioClient(HttpClient http, string baseUrl, string pro
             if (body is null || !body.Success) return null;
 
             return new VersionInfo(
-                body.LatestVersion ?? body.Version?.Version,
-                body.HasUpdate ?? body.UpdateAvailable ?? false,
-                body.DownloadUrl,
-                body.Version?.Changelog,
+                body.LatestVersion ?? body.Update?.Version,
+                body.HasUpdate ?? false,
+                body.Update?.DownloadUrl,
+                body.Update?.Changelog,
+                // Not something the product API says yet. Kept so the agent's
+                // loop is already wired for the day the server can order a
+                // build off the network — a security fix needs that lever.
                 body.ForceUpdate ?? false);
         }
         catch
@@ -159,29 +165,40 @@ public sealed class XmanStudioClient(HttpClient http, string baseUrl, string pro
         [JsonPropertyName("message")] public string? Message { get; set; }
     }
 
+    // Shapes verified against ProductLicenseController::validate and
+    // VersionController::check in the xmanstudio source, 2026-09-18. A guess
+    // here fails silently — every licensed node would report the free tier.
+
     private sealed class LicenseEnvelope
     {
         [JsonPropertyName("success")] public bool Success { get; set; }
-        [JsonPropertyName("status")] public string? Status { get; set; }
-        [JsonPropertyName("plan")] public string? Plan { get; set; }
-        [JsonPropertyName("expires_at")] public DateTimeOffset? ExpiresAt { get; set; }
+        [JsonPropertyName("is_valid")] public bool IsValid { get; set; }
         [JsonPropertyName("message")] public string? Message { get; set; }
+        [JsonPropertyName("data")] public LicenseData? Data { get; set; }
+
+        internal sealed class LicenseData
+        {
+            [JsonPropertyName("license_type")] public string? LicenseType { get; set; }
+            [JsonPropertyName("status")] public string? Status { get; set; }
+            [JsonPropertyName("expires_at")] public DateTimeOffset? ExpiresAt { get; set; }
+            [JsonPropertyName("days_remaining")] public int? DaysRemaining { get; set; }
+            [JsonPropertyName("is_expired")] public bool? IsExpired { get; set; }
+        }
     }
 
     private sealed class UpdateEnvelope
     {
         [JsonPropertyName("success")] public bool Success { get; set; }
         [JsonPropertyName("has_update")] public bool? HasUpdate { get; set; }
-        [JsonPropertyName("update_available")] public bool? UpdateAvailable { get; set; }
         [JsonPropertyName("latest_version")] public string? LatestVersion { get; set; }
-        [JsonPropertyName("download_url")] public string? DownloadUrl { get; set; }
         [JsonPropertyName("force_update")] public bool? ForceUpdate { get; set; }
-        [JsonPropertyName("version")] public VersionBlock? Version { get; set; }
+        [JsonPropertyName("update")] public UpdateBlock? Update { get; set; }
 
-        internal sealed class VersionBlock
+        internal sealed class UpdateBlock
         {
             [JsonPropertyName("version")] public string? Version { get; set; }
             [JsonPropertyName("changelog")] public string? Changelog { get; set; }
+            [JsonPropertyName("download_url")] public string? DownloadUrl { get; set; }
         }
     }
 }

@@ -28,6 +28,22 @@ IConfigurationRoot configuration = new ConfigurationBuilder()
 
 var options = configuration.Get<AgentOptions>() ?? new AgentOptions();
 
+// `--identity`: print what XMAN Studio will see as this machine and exit. The
+// first thing support asks for when a device looks duplicated or missing.
+if (args.Any(a => a.Equals("--identity", StringComparison.OrdinalIgnoreCase)))
+{
+    var sw = System.Diagnostics.Stopwatch.StartNew();
+    string machineId = GpuxMine.Core.MachineIdentity.MachineId();
+    Console.WriteLine($"machine_id     {machineId}");
+    Console.WriteLine($"facts_used     {GpuxMine.Core.MachineIdentity.FactCount} (0 = fallback to machine name — id will change if the PC is renamed)");
+    Console.WriteLine($"hardware_hash  {GpuxMine.Core.MachineIdentity.HardwareHash()}");
+    Console.WriteLine($"machine_name   {GpuxMine.Core.MachineIdentity.MachineName()}");
+    Console.WriteLine($"os_version     {GpuxMine.Core.MachineIdentity.OsVersion()}");
+    Console.WriteLine($"agent_version  {SelfUpdater.CurrentVersion}");
+    Console.WriteLine($"(resolved in {sw.ElapsedMilliseconds} ms)");
+    return 0;
+}
+
 // Before anything else. Velopack delivers its install/update/uninstall hooks by
 // re-running this executable with special arguments, and this also moves our
 // working directory out of the install tree — a process sitting inside it is
@@ -107,9 +123,11 @@ Task progress = Task.Run(async () =>
     catch (Exception ex) { log.Warn($"progress tracker stopped: {ex.Message}"); }
 }, stopping.Token);
 
-Task updates = options.AutoUpdate
+// Resolves to true when an update is staged and the node has gone idle — the
+// signal for the shutdown path below to apply it once everything is down.
+Task<bool> updates = options.AutoUpdate
     ? Task.Run(() => UpdateLoopAsync(updater, studio, runtime, options, log, stopping), stopping.Token)
-    : Task.CompletedTask;
+    : Task.FromResult(false);
 
 try
 {
@@ -118,14 +136,26 @@ try
 finally
 {
     await stopping.CancelAsync();
-    await Task.WhenAny(Task.WhenAll(progress, updates), Task.Delay(TimeSpan.FromSeconds(2)));
+    await Task.WhenAny(Task.WhenAll(progress, updates), Task.Delay(TimeSpan.FromSeconds(5)));
     mock?.Dispose();
+
+    // Applied here, after the relay socket and the runtime are down, and by
+    // the thread that owns shutdown. An earlier version had the update loop
+    // cancel the host and then call apply on its own timer, which raced the
+    // host's own exit: whichever finished first won, and half the time that
+    // was `return 0` — the update was staged, logged, and never applied.
+    if (updates.IsCompletedSuccessfully && updates.Result)
+    {
+        updater.ApplyAndRestart();   // does not return when it succeeds
+        log.Warn("update could not be applied — continuing on the current build");
+    }
+
     log.Info("agent stopped");
 }
 
 return 0;
 
-static async Task UpdateLoopAsync(
+static async Task<bool> UpdateLoopAsync(
     SelfUpdater updater,
     XmanStudioClient studio,
     ComfyRuntime runtime,
@@ -138,7 +168,7 @@ static async Task UpdateLoopAsync(
     // A little breathing room after launch so the first check never competes
     // with connecting to the relay and claiming the first job.
     try { await Task.Delay(TimeSpan.FromSeconds(45), stopping.Token); }
-    catch (OperationCanceledException) { return; }
+    catch (OperationCanceledException) { return false; }
 
     while (!stopping.IsCancellationRequested)
     {
@@ -156,11 +186,11 @@ static async Task UpdateLoopAsync(
         {
             case UpdateOutcome.NotInstalled:
                 log.Info(check.Detail ?? "not installed — skipping auto-update");
-                return; // never changes within a run
+                return false; // never changes within a run
 
             case UpdateOutcome.GaveUp:
                 log.Warn(check.Detail ?? "update could not be applied");
-                return; // looping harder is exactly what went wrong for BrainX
+                return false; // looping harder is exactly what went wrong for BrainX
 
             case UpdateOutcome.Downloaded:
                 log.Info($"update {check.AvailableVersion} downloaded — waiting for the node to go idle");
@@ -170,19 +200,17 @@ static async Task UpdateLoopAsync(
                 while (runtime.IsBusy && !stopping.IsCancellationRequested)
                 {
                     try { await Task.Delay(TimeSpan.FromSeconds(15), stopping.Token); }
-                    catch (OperationCanceledException) { return; }
+                    catch (OperationCanceledException) { return false; }
                 }
-                if (stopping.IsCancellationRequested) return;
+                if (stopping.IsCancellationRequested) return false;
 
-                // Shut the runtime and the relay socket down first. A Python
-                // child still running out of the install tree holds the very
-                // directory Velopack has to rename.
-                log.Info("stopping the local runtime before applying the update");
+                // Ask the host to shut down; it applies the update once the
+                // relay socket and the runtime are actually gone. A Python
+                // child still running out of the install tree would hold the
+                // very directory Velopack has to rename.
+                log.Info("stopping the node to apply the update");
                 await stopping.CancelAsync();
-                await Task.Delay(TimeSpan.FromSeconds(2));
-
-                updater.ApplyAndRestart();
-                return;
+                return true;
 
             case UpdateOutcome.Failed:
             case UpdateOutcome.UpToDate:
@@ -191,6 +219,8 @@ static async Task UpdateLoopAsync(
         }
 
         try { await Task.Delay(period, stopping.Token); }
-        catch (OperationCanceledException) { return; }
+        catch (OperationCanceledException) { return false; }
     }
+
+    return false;
 }
