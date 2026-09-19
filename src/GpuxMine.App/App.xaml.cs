@@ -22,7 +22,24 @@ public partial class App : Application
         // with special arguments, and this call is what handles them. It has to
         // be in the entry assembly: the packer scans for it here and refuses to
         // build a release if it only finds it in a referenced library.
-        VelopackApp.Build().Run();
+        //
+        // The shortcuts are written here, in the install and update hooks,
+        // rather than left to the first ordinary run. Velopack's own shortcuts
+        // point into `current`, and `current` is the directory an update
+        // renames — so they are wrong the moment the first update lands, and an
+        // owner who never opens Settings would never have them corrected. The
+        // hook runs while the installer is still on screen, which is the one
+        // moment the machine is guaranteed to be in a known state.
+        //
+        // Both callbacks are the "fast" variants: they run inside the
+        // installer's own process and must return quickly. Writing two .lnk
+        // files is well inside that, and DesktopIntegration swallows its own
+        // failures, so a shortcut that cannot be written can never fail an
+        // install.
+        VelopackApp.Build()
+            .OnAfterInstallFastCallback(_ => DesktopIntegration.EnsureStartMenuShortcut(_ => { }))
+            .OnAfterUpdateFastCallback(_ => DesktopIntegration.EnsureStartMenuShortcut(_ => { }))
+            .Run();
 
         base.OnStartup(e);
 

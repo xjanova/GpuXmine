@@ -32,25 +32,27 @@ public sealed class NodeStore : IDisposable
     /// <summary>Everything older than this is swept nightly — long enough for any dispute, short enough to stay small.</summary>
     public static readonly TimeSpan Retention = TimeSpan.FromDays(120);
 
-    private readonly string _connectionString;
+    private string _connectionString;
     private readonly SqliteConnection _keepAlive;
     private readonly Lock _writeGate = new();
 
-    public string Path { get; }
+    public string Path { get; private set; }
 
     /// <summary>Set when the ledger could not be opened and had to be replaced. The host tells the owner.</summary>
     public string? RecoveredFrom { get; private set; }
+
+    /// <summary>
+    /// Set when the damaged ledger could not even be moved, and the node is
+    /// running from a file beside it instead. Rare, and worth saying out loud:
+    /// it means something else still holds the original.
+    /// </summary>
+    public string? SidesteppedTo { get; private set; }
 
     public NodeStore(string databasePath)
     {
         Path = databasePath;
         Directory.CreateDirectory(System.IO.Path.GetDirectoryName(databasePath)!);
-        _connectionString = new SqliteConnectionStringBuilder
-        {
-            DataSource = databasePath,
-            Mode = SqliteOpenMode.ReadWriteCreate,
-            Cache = SqliteCacheMode.Shared,
-        }.ToString();
+        _connectionString = ConnectionStringFor(databasePath);
 
         try
         {
@@ -69,12 +71,29 @@ public sealed class NodeStore : IDisposable
             //
             // Losing history is bad. Being unable to start is worse, and it is
             // the one of the two that also stops the node earning.
-            RecoveredFrom = Quarantine(databasePath, ex);
+            RecoveredFrom = Quarantine(databasePath, ex, out string? openInstead);
+            if (openInstead is not null)
+            {
+                // The damaged file is still there and still held. Start beside
+                // it rather than not at all.
+                databasePath = openInstead;
+                _connectionString = ConnectionStringFor(databasePath);
+                SidesteppedTo = databasePath;
+                Path = databasePath;
+            }
             _keepAlive = OpenAndPrepare();
         }
 
         Migrate();
     }
+
+    private static string ConnectionStringFor(string databasePath) =>
+        new SqliteConnectionStringBuilder
+        {
+            DataSource = databasePath,
+            Mode = SqliteOpenMode.ReadWriteCreate,
+            Cache = SqliteCacheMode.Shared,
+        }.ToString();
 
     private SqliteConnection OpenAndPrepare()
     {
@@ -154,7 +173,7 @@ public sealed class NodeStore : IDisposable
     /// may still be readable by hand, and silently destroying the file that
     /// proves a payout is the wrong instinct even when it is unreadable to us.
     /// </remarks>
-    private static string Quarantine(string databasePath, SqliteException cause)
+    private static string Quarantine(string databasePath, SqliteException cause, out string? openInstead)
     {
         // Invariant, or a Thai machine names the file in the Buddhist era and
         // the owner sends support a node.db.corrupt-2569... that reads as being
@@ -181,10 +200,41 @@ public sealed class NodeStore : IDisposable
             }
         }
 
-        if (File.Exists(databasePath))
-            throw new InvalidOperationException($"Could not set aside the damaged ledger at {databasePath}: {cause.Message}", cause);
-
+        // Freed the name: the fresh ledger takes the usual path, and nothing
+        // downstream has to know this happened.
+        openInstead = File.Exists(databasePath) ? Sidestep(databasePath, stamp) : null;
         return kept;
+    }
+
+    /// <summary>
+    /// A path we can open when the damaged ledger refuses to move out of the way.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This used to throw. The reasoning was that if the bad file is still
+    /// sitting there, the fresh database would open on top of the damage — so
+    /// better to fail loudly than to pretend. In practice it failed loudly in
+    /// the one place that cannot afford it: the exception came out of the
+    /// constructor, past the handler written to keep a bad ledger from ending
+    /// the node, and the owner got a process that died at startup with no
+    /// window and nothing to act on. Recorded on this machine at 09:09 on
+    /// 2026-09-19, on a file another copy of the program still had open.
+    /// </para>
+    /// <para>
+    /// A file that will not move is almost always a file something else holds,
+    /// and the honest answer to that is to leave it alone and keep our records
+    /// somewhere else. History is lost either way; the difference is whether
+    /// the machine goes on earning while somebody sorts it out. The server
+    /// holds the authoritative record of finished work regardless.
+    /// </para>
+    /// </remarks>
+    private static string Sidestep(string databasePath, string stamp)
+    {
+        // System.IO.Path spelled out: this type has its own `Path` property.
+        string directory = System.IO.Path.GetDirectoryName(databasePath) ?? ".";
+        string name = System.IO.Path.GetFileNameWithoutExtension(databasePath);
+        string extension = System.IO.Path.GetExtension(databasePath);
+        return System.IO.Path.Combine(directory, $"{name}-{stamp}{extension}");
     }
 
     private SqliteConnection Open()
