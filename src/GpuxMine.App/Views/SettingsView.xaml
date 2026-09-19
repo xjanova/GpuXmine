@@ -138,6 +138,11 @@
                                        Visibility="{Binding PairingStatus, Converter={StaticResource NullVis}}"/>
                             <Button Style="{StaticResource ChromeButton}" Content="เปิดหน้าเครื่องของฉัน" Margin="0,8,0,0"
                                     Command="{Binding OpenUrl}" CommandParameter="{Binding NodesUrl}"/>
+                            <!-- ทางกลับ มีเฉพาะตอนที่เครื่องลงทะเบียนอยู่แล้ว
+                                 เครื่องใหม่ที่ยังไม่มีตัวตนไม่มีอะไรให้ยกเลิกกลับไปหา -->
+                            <Button Style="{StaticResource ChromeButton}" Content="ยกเลิก ใช้การลงทะเบียนเดิม" Margin="0,6,0,0"
+                                    Command="{Binding CancelPairingChange}"
+                                    Visibility="{Binding IsPaired, Converter={StaticResource Vis}}"/>
                         </StackPanel>
                     </Border>
 

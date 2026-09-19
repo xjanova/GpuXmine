@@ -77,6 +77,7 @@ public sealed class MainViewModel : ObservableObject
         RunBenchmark = RelayCommand.Of(() => _ = RunBenchmarkAsync());
         PairNode = RelayCommand.Of(() => _ = PairNodeAsync());
         ChangePairing = RelayCommand.Of(BeginRepair);
+        CancelPairingChange = RelayCommand.Of(EndRepair);
         OpenUrl = new RelayCommand(p => OpenInBrowser((string)p!));
         Navigate = new RelayCommand(p => CurrentScreen = (string)p!);
         CopyText = new RelayCommand(p => { try { Clipboard.SetText((string)p!); } catch { /* clipboard busy */ } });
@@ -565,9 +566,28 @@ public sealed class MainViewModel : ObservableObject
     /// </remarks>
     public RelayCommand ChangePairing { get; }
 
+    /// <summary>
+    /// Backs out of re-registering, for the owner who opened it to look.
+    /// </summary>
+    /// <remarks>
+    /// Without this the form had no way back: one click and a machine that was
+    /// registered showed the "enter a pairing code" box until the program was
+    /// restarted, which reads exactly like a client that cannot make up its
+    /// mind about whether it is registered.
+    /// </remarks>
+    public RelayCommand CancelPairingChange { get; }
+
     private void BeginRepair()
     {
         _repairing = true;
+        PairingStatus = null;
+        Raise(nameof(ShowPairingForm)); Raise(nameof(PairingStatus));
+    }
+
+    private void EndRepair()
+    {
+        _repairing = false;
+        PairingCode = "";
         PairingStatus = null;
         Raise(nameof(ShowPairingForm)); Raise(nameof(PairingStatus));
     }
