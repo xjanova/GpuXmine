@@ -42,6 +42,19 @@ public static class NodeIdentityFile
         Dictionary<string, JsonElement> existing = Read(path);
         var document = new Dictionary<string, object?>();
 
+        // The relay we are already using, kept in case the caller has no
+        // opinion. Read before the loop drops it, because the loop is what
+        // used to lose it.
+        string? previousRelay = null;
+        foreach (var (key, value) in existing)
+        {
+            if (key.Equals("RelayUrl", StringComparison.OrdinalIgnoreCase)
+                && value.ValueKind == JsonValueKind.String)
+            {
+                previousRelay = value.GetString();
+            }
+        }
+
         foreach (var (key, value) in existing)
         {
             // Skip the three we are about to write, so a stale value cannot
@@ -54,7 +67,18 @@ public static class NodeIdentityFile
 
         document["WorkerId"] = workerId;
         document["Token"] = token;
-        if (!string.IsNullOrWhiteSpace(relayUrl)) document["RelayUrl"] = relayUrl;
+
+        // Falling back to what was already there, not to nothing.
+        //
+        // This line used to write the new relay only when it was non-empty —
+        // and the loop above had already dropped the old one. So a pairing
+        // response that omitted `relay_url` deleted a working relay address,
+        // the node fell back to the compiled-in default, and the owner was
+        // left looking at a client pointed at localhost with no way to fix it
+        // from the interface. Re-registering could break a node that had been
+        // earning for weeks.
+        string? relay = string.IsNullOrWhiteSpace(relayUrl) ? previousRelay : relayUrl;
+        if (!string.IsNullOrWhiteSpace(relay)) document["RelayUrl"] = relay;
 
         string json = JsonSerializer.Serialize(document, new JsonSerializerOptions
         {

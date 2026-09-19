@@ -2,8 +2,21 @@ namespace GpuxMine.Node;
 
 public sealed class NodeOptions
 {
-    /// <summary>e.g. wss://relay.gpuxmine.dev/agent</summary>
-    public string RelayUrl { get; init; } = "ws://localhost:5080/agent";
+    /// <summary>
+    /// The relay this node dials out to. Overridden by the identity file the
+    /// moment the machine is registered.
+    /// </summary>
+    /// <remarks>
+    /// The default used to be <c>ws://localhost:5080/agent</c>, which is a
+    /// developer's own machine and not a thing any owner has. Anything that
+    /// left the identity file without a relay — a pairing response missing
+    /// <c>relay_url</c>, a hand-edited file, a fresh install read before
+    /// registration — showed the owner a client pointed at localhost that
+    /// could never connect, and said nothing about why.
+    /// A wrong-but-real default fails loudly and in one place; a localhost
+    /// default fails silently on every machine that is not ours.
+    /// </remarks>
+    public string RelayUrl { get; init; } = "wss://relay.xman4289.com:8443/agent";
 
     public string WorkerId { get; init; } = "";
 

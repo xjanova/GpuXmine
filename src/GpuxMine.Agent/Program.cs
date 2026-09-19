@@ -88,7 +88,7 @@ if (!options.Validate(out string error))
 
         Enrol a node on the relay, then run:
 
-          gpuxmine-agent --WorkerId gxm-xxxxxxxxxxxx --Token <token> --RelayUrl ws://localhost:5080/agent
+          gpuxmine-agent --WorkerId gxm-xxxxxxxxxxxx --Token <token> --RelayUrl wss://relay.xman4289.com:8443/agent
 
         Options:
           --ComfyUrl        where the local ComfyUI listens   (default http://127.0.0.1:8188)
