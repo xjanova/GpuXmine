@@ -233,6 +233,20 @@ public sealed class MainViewModel : ObservableObject
         PowerCostPerDay = (decimal)KwhPerDay * EffectiveTariff();
         Raise(nameof(PowerCostText)); Raise(nameof(KwhText)); Raise(nameof(NetText)); Raise(nameof(GrossText));
 
+        // Registration, re-read on every tick.
+        //
+        // These are computed from the node's options and raised nowhere except
+        // after a pairing, so WPF evaluated each of them once when the Settings
+        // screen was first built and kept that answer for the life of the
+        // process. One bad first evaluation and a registered machine was told
+        // it was not registered for that entire run — then looked fine on the
+        // next launch, which is exactly the report: it comes back after closing
+        // and reopening. Re-raising costs four property reads a second and
+        // makes the screen correct itself rather than commit to a first guess.
+        Raise(nameof(IsPaired)); Raise(nameof(ShowPairingForm)); Raise(nameof(PairedSummary));
+        Raise(nameof(IsConfigured)); Raise(nameof(ConfigureHint)); Raise(nameof(WorkerIdText));
+        Raise(nameof(RelayHostText));
+
         foreach (var name in new[] {
             nameof(Running), nameof(Accepting), nameof(PauseReason), nameof(ConnectionText), nameof(DialText), nameof(DialSub), nameof(ShowPauseReason),
             nameof(GpuMeasured), nameof(GpuName), nameof(GpuDetail), nameof(DriverText), nameof(LoadPct), nameof(TempC), nameof(FanPct), nameof(PowerW),

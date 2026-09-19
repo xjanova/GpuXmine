@@ -1,4 +1,5 @@
 using System.IO;
+using System.Net.Http;
 using System.Windows;
 using GpuxMine.App.Shell;
 using GpuxMine.App.ViewModels;
@@ -39,6 +40,31 @@ public partial class App : Application
         catch
         {
             // Nothing to do about it, and nothing worth failing a startup over.
+        }
+    }
+
+    /// <summary>
+    /// Asks the local runtime whether it is there, with a short timeout.
+    /// </summary>
+    /// <remarks>
+    /// A node whose ComfyUI is not running cannot be assessed and cannot earn,
+    /// and until now the owner found that out by noticing nothing happened.
+    /// One second: this is a loopback call, and a startup screen must never be
+    /// the thing that is slow.
+    /// </remarks>
+    private static string ProbeComfy(string comfyUrl)
+    {
+        try
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(1) };
+            using var response = http.GetAsync(comfyUrl.TrimEnd('/') + "/system_stats").GetAwaiter().GetResult();
+            return response.IsSuccessStatusCode
+                ? $"พร้อม · {comfyUrl}"
+                : $"ตอบ HTTP {(int)response.StatusCode} — เปิด ComfyUI ก่อนจึงจะรับงานได้";
+        }
+        catch
+        {
+            return "ยังไม่ได้เปิด ComfyUI — เครื่องจะยังรับงานไม่ได้จนกว่าจะเปิด";
         }
     }
 
@@ -108,23 +134,62 @@ public partial class App : Application
             return;
         }
 
+        bool minimised = e.Args.Any(a => a.Equals("--minimized", StringComparison.OrdinalIgnoreCase));
+
+        // Nothing is shown when the node is starting to the tray at login: a
+        // splash that appears over somebody's desktop every morning is not a
+        // courtesy.
+        SplashWindow? splash = null;
+        if (!minimised)
+        {
+            splash = new SplashWindow();
+            splash.Begin(5);
+            splash.Show();
+        }
+
+        splash?.Step("เตรียมโฟลเดอร์ข้อมูล");
         // Our working directory out of the install tree, so an update can
         // rename it later.
         SelfUpdater.Prepare(options.DataDirectory);
+        splash?.Done(options.DataDirectory);
 
+        splash?.Step("เปิดบันทึกงานของเครื่อง");
         // The window opens even when the node is not configured yet: the
         // Settings screen is where the owner fixes that. Only the relay
         // connection needs the worker id and token.
         _host = new NodeHost(options, new GpuTelemetry(), new UserActivity(),
             health: new WindowsHostHealth());
         _host.UpdateReady += () => Dispatcher.BeginInvoke(ShutdownForUpdate);
+        splash?.Done(_host.Store.RecoveredFrom is null
+            ? $"ปกติ · {_host.Store.SizeBytes() / 1024.0 / 1024.0:0.0} MB"
+            : "ไฟล์เดิมเสียหาย เริ่มไฟล์ใหม่ ของเดิมเก็บไว้แล้ว");
 
+        // The check that has been guessed at rather than seen.
+        //
+        // The Settings screen showed "not registered" on a machine that was,
+        // and came back to it after a restart. Nothing recorded what the
+        // program had actually resolved, so there was nothing to compare
+        // against. Now the identity is read out at startup, on screen and in
+        // the log, every single launch.
+        splash?.Step("ตรวจการลงทะเบียนเครื่อง");
+        bool paired = !string.IsNullOrWhiteSpace(options.WorkerId);
+        string identity = paired
+            ? $"{options.WorkerId} · relay {options.RelayUrl}"
+            : "ยังไม่ได้ลงทะเบียน — กรอกรหัสจับคู่ในหน้า Settings";
+        _host.Log.Info($"[cfg] ตัวตนเครื่องตอนเปิด: {identity}");
+        splash?.Done(identity);
+
+        splash?.Step("เตรียมหน้าจอ");
         _vm = new MainViewModel(_host, Dispatcher);
         _host.Begin();
 
         // Findable again after the first run, whether the node was installed or
         // just unzipped somewhere.
         DesktopIntegration.EnsureStartMenuShortcut(_host.Log.Info);
+        splash?.Done("พร้อม");
+
+        splash?.Step("ตรวจ ComfyUI");
+        splash?.Done(ProbeComfy(options.ComfyUrl));
 
         var window = new MainWindow { DataContext = _vm };
         MainWindow = window;
@@ -135,7 +200,9 @@ public partial class App : Application
         // process that is in the middle of earning.
         _tray = new TrayIcon(_host, window);
 
-        bool minimised = e.Args.Any(a => a.Equals("--minimized", StringComparison.OrdinalIgnoreCase));
+        // The splash goes before the window appears, not after: two windows on
+        // screen at once is worse than no splash at all.
+        splash?.Close();
         if (!minimised) window.Show();
 
         // Autostart implies the owner wants it earning, not just running.

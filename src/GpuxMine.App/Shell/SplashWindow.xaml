@@ -1,0 +1,56 @@
+<Window x:Class="GpuxMine.App.Shell.SplashWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="GPUxMINE" Width="460" Height="352"
+        WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        WindowStartupLocation="CenterScreen" ShowInTaskbar="False" Topmost="True"
+        ResizeMode="NoResize">
+
+    <Border CornerRadius="12" Background="{StaticResource ChromePanel}"
+            BorderBrush="{StaticResource ChromeBorderDark}" BorderThickness="1">
+        <Border.Effect>
+            <DropShadowEffect Color="#000000" BlurRadius="24" ShadowDepth="5" Opacity="0.35"/>
+        </Border.Effect>
+
+        <Grid Margin="0">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <!-- โลโก้ + ชื่อ -->
+            <StackPanel Grid.Row="0" VerticalAlignment="Center" HorizontalAlignment="Center" Margin="0,6,0,0">
+                <Image Source="/Assets/logo.png" Width="230" RenderOptions.BitmapScalingMode="HighQuality"/>
+                <TextBlock Text="แบ่งปันการ์ดจอ รับงาน AI" Style="{StaticResource Muted}"
+                           HorizontalAlignment="Center" Margin="0,10,0,0"/>
+                <TextBlock Style="{StaticResource Mono}" FontSize="10.5" HorizontalAlignment="Center"
+                           Foreground="{StaticResource InkMuted}" Margin="0,3,0,0">
+                    <Run Text="v"/><Run Text="{Binding Version, Mode=OneWay}"/>
+                </TextBlock>
+            </StackPanel>
+
+            <!-- สิ่งที่กำลังตรวจ: ชื่อขั้นตอน ผลลัพธ์ และแถบความคืบหน้า -->
+            <Border Grid.Row="1" Background="{StaticResource Lcd}" CornerRadius="0,0,11,11"
+                    BorderBrush="{StaticResource ChromeBorderLight}" BorderThickness="0,1,0,0" Padding="18,12">
+                <StackPanel>
+                    <Grid Margin="0,0,0,7">
+                        <TextBlock Text="{Binding StepText}" Style="{StaticResource LcdLabelText}"
+                                   VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                        <TextBlock Text="{Binding StepCountText}" Style="{StaticResource Mono}" FontSize="10"
+                                   Foreground="{StaticResource LcdBlue}" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                    </Grid>
+
+                    <Border Height="6" CornerRadius="3" Background="#20303c">
+                        <Border HorizontalAlignment="Left" CornerRadius="3" Background="{StaticResource GoldCell}"
+                                Width="{Binding BarWidth}"/>
+                    </Border>
+
+                    <!-- ผลของขั้นตอนล่าสุด บอกสิ่งที่พบจริง ไม่ใช่แค่ว่า "เสร็จแล้ว" -->
+                    <TextBlock Text="{Binding DetailText}" Style="{StaticResource Mono}" FontSize="10.5"
+                               Foreground="{StaticResource LcdBlue}" Margin="0,8,0,0"
+                               TextWrapping="Wrap" MinHeight="28" VerticalAlignment="Top"/>
+                </StackPanel>
+            </Border>
+        </Grid>
+    </Border>
+</Window>
