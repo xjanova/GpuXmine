@@ -68,12 +68,19 @@
                                      ของโลโก้จึงจมหายไปในพื้น มันถูกออกแบบมาให้วางบนพื้นเข้ม
                                      เงาเข้มชิด ๆ ให้ขอบกับส่วนสว่างพวกนั้นโดยไม่ต้องเอาแผ่น
                                      รองสีเข้มมาบัง ซึ่งเป็นสิ่งที่เพิ่งเอาออกไป -->
+                                <!-- เงาเดิมเป็นสีทองเข้ม มีไว้ดันส่วนสว่างของโลโก้
+                                     ให้เด่นออกจากแถบทอง พอแถบเป็นโลหะเข้มแล้ว ปัญหากลับด้าน:
+                                     ส่วนเข้มของโลโก้ต่างหากที่จม จึงเปลี่ยนเป็นแสงเรืองอ่อน ๆ
+                                     รอบตัวแทนการทิ้งเงาลงล่าง -->
                                 <Image.Effect>
-                                    <DropShadowEffect Color="#2a2205" BlurRadius="5" ShadowDepth="1.5"
-                                                      Direction="270" Opacity="0.65"/>
+                                    <DropShadowEffect Color="#9fb4cc" BlurRadius="10" ShadowDepth="0"
+                                                      Opacity="0.45"/>
                                 </Image.Effect>
                             </Image>
-                            <TextBlock VerticalAlignment="Center" FontSize="11" Foreground="#5d4a14"
+                            <!-- สีนี้เคยเป็น #5d4a14 ซึ่งเลือกไว้ตอนแถบยังเป็นทอง
+                                 พอแถบกลายเป็นโลหะเข้ม น้ำตาลเข้มบนพื้นเข้มก็อ่านไม่ออก
+                                 ใช้ฟ้าอ่อนชุดเดียวกับตัวอักษรบนจอ LCD -->
+                            <TextBlock VerticalAlignment="Center" FontSize="11" Foreground="{StaticResource LcdBlue}"
                                        TextTrimming="CharacterEllipsis" ToolTip="{Binding WorkerIdText}">
                                 <Run Text="Worker Node — "/><Run Text="{Binding WorkerIdText, Mode=OneWay}"/><Run Text=" · v"/><Run Text="{Binding VersionText, Mode=OneWay}"/>
                             </TextBlock>
