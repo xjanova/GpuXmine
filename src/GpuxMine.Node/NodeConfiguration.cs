@@ -75,8 +75,22 @@ public static class NodeConfiguration
             };
         }
 
+        // Nothing found anywhere. Record where it looked, because the next
+        // person to see "ยังไม่ได้ลงทะเบียน" on a machine that plainly is
+        // registered should be reading a list of paths rather than guessing.
+        LastIdentitySearch = string.Join(" · ", new[]
+        {
+            options.DataDirectory, NodeOptions.DefaultDataDirectory(), NodeOptions.LegacyDataDirectory(),
+        }.Distinct(StringComparer.OrdinalIgnoreCase));
+
         return options;
     }
+
+    /// <summary>
+    /// The folders searched the last time an identity could not be found.
+    /// Null whenever one was found, which is almost always.
+    /// </summary>
+    public static string? LastIdentitySearch { get; private set; }
 
     private static IConfigurationRoot Compose(string[] args, string? extraIdentityDirectory)
     {

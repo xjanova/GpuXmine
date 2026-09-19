@@ -78,7 +78,33 @@ public sealed record NodeOptions
     /// </para>
     /// </remarks>
     public static string DefaultDataDirectory() =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "GPUxMINE");
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), FolderName);
+
+#if DEBUG
+    /// <summary>
+    /// A development build keeps its own folder, away from the installed node.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// They used to share one, and sharing it did real damage. Two processes
+    /// held the same SQLite file and the owner's ledger was destroyed three
+    /// times in a day. The single-instance lock is per data directory, so a
+    /// development build left running also made the owner's shortcut front
+    /// <i>that</i> window instead of starting their own — measured, not
+    /// theorised: launching the installed build while a debug build was up saw
+    /// the installed process exit immediately.
+    /// </para>
+    /// <para>
+    /// A build from a development machine has no business writing to the
+    /// identity, the ledger or the settings of a node that is actually earning.
+    /// Pass <c>--DataDirectory</c> to point a debug build at the real folder
+    /// when that is genuinely what is wanted.
+    /// </para>
+    /// </remarks>
+    private const string FolderName = "GPUxMINE-dev";
+#else
+    private const string FolderName = "GPUxMINE";
+#endif
 
     /// <summary>Where the data used to live. Read once, to rescue it, then never again.</summary>
     public static string LegacyDataDirectory() =>
