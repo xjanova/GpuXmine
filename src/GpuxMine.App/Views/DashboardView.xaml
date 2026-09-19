@@ -109,20 +109,45 @@
 
             <!-- LIVE GAUGES -->
             <Border Grid.Column="2" Style="{StaticResource ChromePanelStyle}">
+                <Grid>
+                    <!-- น็อตสี่มุม อ่านว่าแผงนี้ถูกขันติดอยู่กับเครื่อง
+                         ใส่แค่แผงนี้แผงเดียว ถ้าใส่ทุกแผงมันจะกลายเป็นลายพื้น
+                         ไม่ใช่รายละเอียด และแย่งสายตาจากตัวเลขที่ต้องอ่าน -->
+                    <Image Source="/Assets/gfx/panel-screw.png" Width="13" Height="13" Opacity="0.55"
+                           HorizontalAlignment="Left" VerticalAlignment="Top" Margin="-6,-6,0,0" IsHitTestVisible="False"/>
+                    <Image Source="/Assets/gfx/panel-screw.png" Width="13" Height="13" Opacity="0.55"
+                           HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,-6,-6,0" IsHitTestVisible="False"/>
+                    <Image Source="/Assets/gfx/panel-screw.png" Width="13" Height="13" Opacity="0.55"
+                           HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="-6,0,0,-6" IsHitTestVisible="False"/>
+                    <Image Source="/Assets/gfx/panel-screw.png" Width="13" Height="13" Opacity="0.55"
+                           HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,-6,-6" IsHitTestVisible="False"/>
+
                 <StackPanel>
                     <TextBlock Text="LIVE GAUGES" Style="{StaticResource SectionLabel}"/>
                     <Grid Margin="0,4,0,8">
                         <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                        <!-- วงแหวนโลหะครอบเกจ วางใต้เข็มและตัวเลข ไม่ใช่ทับ
+                             กว้างกว่าเกจเล็กน้อยเพื่อให้เป็นขอบ ไม่ใช่กรอบบีบ -->
                         <StackPanel Grid.Column="0" HorizontalAlignment="Center">
-                            <c:Gauge Width="94" Height="94" Value="{Binding LoadPct}" ArcBrush="{StaticResource GoldFill}" TextBrush="{StaticResource LcdGold}" FontSize="18">
-                                <c:Gauge.Text><MultiBinding StringFormat="{}{0}%"><Binding Path="LoadPct"/></MultiBinding></c:Gauge.Text>
-                            </c:Gauge>
+                            <Grid Width="108" Height="108">
+                                <Image Source="/Assets/gfx/gauge-ring.png" Stretch="Uniform" IsHitTestVisible="False"
+                                       RenderOptions.BitmapScalingMode="HighQuality" Opacity="0.85"/>
+                                <c:Gauge Width="94" Height="94" Value="{Binding LoadPct}" ArcBrush="{StaticResource GoldFill}" TextBrush="{StaticResource LcdGold}" FontSize="18"
+                                         HorizontalAlignment="Center" VerticalAlignment="Center">
+                                    <c:Gauge.Text><MultiBinding StringFormat="{}{0}%"><Binding Path="LoadPct"/></MultiBinding></c:Gauge.Text>
+                                </c:Gauge>
+                            </Grid>
                             <TextBlock Text="GPU LOAD" Style="{StaticResource SectionLabel}" HorizontalAlignment="Center" Margin="0,6,0,0"/>
                         </StackPanel>
                         <StackPanel Grid.Column="1" HorizontalAlignment="Center">
-                            <c:Gauge Width="94" Height="94" Value="{Binding TempC}" ArcBrush="{StaticResource OrangeFill}" TextBrush="{StaticResource LcdOrange}" FontSize="18">
-                                <c:Gauge.Text><MultiBinding StringFormat="{}{0}°"><Binding Path="TempC"/></MultiBinding></c:Gauge.Text>
-                            </c:Gauge>
+                            <Grid Width="108" Height="108">
+                                <Image Source="/Assets/gfx/gauge-ring.png" Stretch="Uniform" IsHitTestVisible="False"
+                                       RenderOptions.BitmapScalingMode="HighQuality" Opacity="0.85"/>
+                                <c:Gauge Width="94" Height="94" Value="{Binding TempC}" ArcBrush="{StaticResource OrangeFill}" TextBrush="{StaticResource LcdOrange}" FontSize="18"
+                                         HorizontalAlignment="Center" VerticalAlignment="Center">
+                                    <c:Gauge.Text><MultiBinding StringFormat="{}{0}°"><Binding Path="TempC"/></MultiBinding></c:Gauge.Text>
+                                </c:Gauge>
+                            </Grid>
                             <TextBlock Text="CORE TEMP" Style="{StaticResource SectionLabel}" HorizontalAlignment="Center" Margin="0,6,0,0"/>
                         </StackPanel>
                     </Grid>
@@ -139,6 +164,7 @@
                         <TextBlock Grid.Row="3" Grid.Column="1" Style="{StaticResource Mono}" Foreground="{StaticResource RedDark}"><Run Text="{Binding PowerCostText, Mode=OneWay}"/><Run Text="/day"/></TextBlock>
                     </Grid>
                 </StackPanel>
+                </Grid>
             </Border>
         </Grid>
 

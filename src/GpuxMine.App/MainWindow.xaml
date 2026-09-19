@@ -114,7 +114,11 @@
                     </Grid.ColumnDefinitions>
 
                     <!-- Sidebar -->
-                    <Border Grid.Column="0" Background="{StaticResource Sidebar}" BorderBrush="{StaticResource SidebarBorder}" BorderThickness="0,0,1,0" Padding="10,12">
+                    <!-- ลายโลหะทับบนสีพื้นเดิม ไม่ได้แทนที่ เหมือนที่ทำกับแผง LCD -->
+                    <Border Grid.Column="0" Background="{StaticResource Sidebar}" BorderBrush="{StaticResource SidebarBorder}" BorderThickness="0,0,1,0" Padding="0">
+                        <Grid>
+                            <Rectangle Fill="{StaticResource SidebarTexture}" IsHitTestVisible="False"/>
+                            <Border Padding="10,12">
                         <!-- Grid ไม่ใช่ DockPanel: DockPanel วัดลูกที่ Dock=Top ด้วยความสูง
                              ไม่จำกัด ScrollViewer ข้างในจึงขอความสูงเท่าเนื้อหาทั้งก้อน
                              แล้วไม่เลื่อนเลย ซ้ำยังดันความสูงขั้นต่ำของหน้าต่างจนย่อไม่ลง
@@ -181,6 +185,8 @@
                                 </StackPanel>
                             </Border>
                         </Grid>
+                            </Border>
+                        </Grid>
                     </Border>
 
                     <!-- Content -->
@@ -199,7 +205,8 @@
                 </Grid>
 
                 <!-- ===== Status bar ===== -->
-                <Border Grid.Row="2" Background="{StaticResource MenuBar}" BorderBrush="{StaticResource ChromeBorderLight}" BorderThickness="0,1,0,0" CornerRadius="0,0,6,6">
+                <!-- เส้นทองมากับภาพที่ขอบบน จึงไม่ต้องมี BorderThickness ด้านบนซ้ำ -->
+                <Border Grid.Row="2" Background="{StaticResource FooterStrip}" BorderThickness="0" CornerRadius="0,0,6,6">
                     <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto" MinWidth="0"/>

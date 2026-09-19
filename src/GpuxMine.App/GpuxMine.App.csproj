@@ -48,6 +48,10 @@
     <Resource Include="Assets\gfx\button-plate-hover.png" />
     <Resource Include="Assets\gfx\panel-bezel.png" />
     <Resource Include="Assets\gfx\emblem-watermark.png" />
+    <Resource Include="Assets\gfx\sidebar-tile.png" />
+    <Resource Include="Assets\gfx\footer-strip.png" />
+    <Resource Include="Assets\gfx\gauge-ring.png" />
+    <Resource Include="Assets\gfx\panel-screw.png" />
     <Resource Include="Assets\icon.png" />
     <Resource Include="Assets\gpuxmine.ico" />
   </ItemGroup>

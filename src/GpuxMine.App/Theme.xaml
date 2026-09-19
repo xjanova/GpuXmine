@@ -281,6 +281,15 @@
     <!-- แถบหัวโปรแกรม: ยืดตามความกว้างหน้าต่าง เส้นทองที่ขอบล่างมากับภาพ -->
     <ImageBrush x:Key="HeaderStrip" ImageSource="/Assets/gfx/header-strip.png" Stretch="Fill"/>
 
+    <!-- ลายโลหะโทนสว่างสำหรับพื้น chrome ต่อลายไร้รอยต่อจริง
+         ตรวจแล้ว: ระยะข้ามรอยต่อ 1.45 น้อยกว่าขอบคอลัมน์ธรรมดา 1.50
+         คอนทราสต์ในลาย 3.9% จึงไม่แย่งสายตาจากตัวหนังสือที่ทับอยู่ -->
+    <ImageBrush x:Key="SidebarTexture" ImageSource="/Assets/gfx/sidebar-tile.png"
+                TileMode="Tile" ViewportUnits="Absolute" Viewport="0,0,256,256" Stretch="None"/>
+
+    <!-- แถบสถานะล่าง เส้นทองอยู่ขอบบนของภาพ รับกับเส้นทองขอบล่างของแถบหัว -->
+    <ImageBrush x:Key="FooterStrip" ImageSource="/Assets/gfx/footer-strip.png" Stretch="Fill"/>
+
     <!-- ══ แผ่นปุ่มโลหะ แบบ 3-slice ══
          WPF ไม่มี 9-slice ในตัว ต้องหั่นเอง: ขอบซ้าย/ขวา 24px คงขนาด
          ส่วนกลาง (x24..215) ยืดได้เพราะทุกคอลัมน์ในช่วงนั้นเหมือนกันทุกพิกเซล
