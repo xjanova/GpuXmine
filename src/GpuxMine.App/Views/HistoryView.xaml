@@ -63,12 +63,19 @@
                     </Grid>
                 </Border>
 
-                <!-- บอกตรง ๆ ว่าทำไมว่าง ดีกว่าปล่อยให้เดาว่าประวัติหาย -->
-                <Border DockPanel.Dock="Bottom" Padding="16,22" Visibility="{Binding HistoryIsEmpty, Converter={StaticResource Vis}}">
-                    <StackPanel HorizontalAlignment="Center">
-                        <TextBlock Text="ยังไม่มีงานที่ทำเสร็จในช่วงนี้" Style="{StaticResource Body}" HorizontalAlignment="Center"/>
-                        <TextBlock Text="งานที่เครื่องนี้รับและทำเสร็จจะถูกบันทึกไว้ที่นี่เอง ไม่หายเมื่อปิดโปรแกรม" Style="{StaticResource Muted}" HorizontalAlignment="Center" Margin="0,4,0,0"/>
-                    </StackPanel>
+                <!-- บอกตรง ๆ ว่าทำไมว่าง ดีกว่าปล่อยให้เดาว่าประวัติหาย
+                     ตราชิปอยู่หลังข้อความแบบจาง ๆ เป็นลายน้ำ ไม่ใช่ภาพประกอบ
+                     ถ้ามันเด่นกว่าประโยคที่บอกว่าทำไมว่าง แปลว่าใส่แรงเกินไป -->
+                <Border DockPanel.Dock="Bottom" Padding="16,26" Visibility="{Binding HistoryIsEmpty, Converter={StaticResource Vis}}">
+                    <Grid HorizontalAlignment="Center">
+                        <Image Source="/Assets/gfx/emblem-watermark.png" Width="132" Opacity="0.5"
+                               HorizontalAlignment="Center" VerticalAlignment="Center"
+                               RenderOptions.BitmapScalingMode="HighQuality" IsHitTestVisible="False"/>
+                        <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                            <TextBlock Text="ยังไม่มีงานที่ทำเสร็จในช่วงนี้" Style="{StaticResource Body}" HorizontalAlignment="Center"/>
+                            <TextBlock Text="งานที่เครื่องนี้รับและทำเสร็จจะถูกบันทึกไว้ที่นี่เอง ไม่หายเมื่อปิดโปรแกรม" Style="{StaticResource Muted}" HorizontalAlignment="Center" Margin="0,4,0,0"/>
+                        </StackPanel>
+                    </Grid>
                 </Border>
 
                 <ScrollViewer VerticalScrollBarVisibility="Auto" c:WheelScroll.Bubble="True">

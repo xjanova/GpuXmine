@@ -47,6 +47,7 @@
     <Resource Include="Assets\gfx\button-plate.png" />
     <Resource Include="Assets\gfx\button-plate-hover.png" />
     <Resource Include="Assets\gfx\panel-bezel.png" />
+    <Resource Include="Assets\gfx\emblem-watermark.png" />
     <Resource Include="Assets\icon.png" />
     <Resource Include="Assets\gpuxmine.ico" />
   </ItemGroup>
