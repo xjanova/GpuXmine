@@ -105,7 +105,7 @@ public sealed class Assessor(
     /// </remarks>
     public const int MinSamples = 3;
 
-    private readonly HttpClient _http = new() { Timeout = TimeSpan.FromMinutes(5) };
+    private readonly HttpClient _http = Core.Net.NodeHttp.Create(TimeSpan.FromMinutes(5));
     private readonly Random _random = new();
 
     /// <summary>
@@ -500,6 +500,11 @@ public sealed class Assessor(
     /// </remarks>
     private static void Score(NodeAssessment a, Storage.NodeStore? history)
     {
+        // Where grading starts. Zero unless the owner has asked to be graded
+        // from the top again, in which case only the work done since counts.
+        long? epoch = history is null ? null : GradingEpoch(history);
+        a.GradingSince = epoch is > 0 ? DateTimeOffset.FromUnixTimeMilliseconds(epoch.Value) : null;
+
         double factor = a.ReferenceSeconds > 0 ? a.ReferenceSeconds / ReferenceBaselineSeconds : double.MaxValue;
 
         // 1000 on a reference card, halving as the card gets twice as slow.
@@ -547,7 +552,7 @@ public sealed class Assessor(
             // What this machine has actually done beats what a blur benchmark
             // predicts it will do. The ledger already holds every job's real
             // duration, so once there are a few of a kind, they are the answer.
-            double? measured = history?.MedianJobSeconds(kind, minSamples: MinSamples);
+            double? measured = history?.MedianJobSeconds(kind, minSamples: MinSamples, sinceUnixMs: epoch);
 
             bool penalised = weightsSpill && a.LowVram;
             double expected = measured ?? baseline * factor * (penalised ? LowVramPenalty : 1);
@@ -675,6 +680,51 @@ public sealed class Assessor(
 
         return report.Capabilities.Any(c => !before.TryGetValue(c.Kind, out string? was) || was != c.Lane);
     }
+
+    // ------------------------------------------------- back to the maximum
+
+    /// <summary>The setting that holds where grading starts, in unix milliseconds.</summary>
+    public const string GradingEpochSetting = "grading_epoch";
+
+    public static long GradingEpoch(Storage.NodeStore store)
+    {
+        try
+        {
+            return long.TryParse(store.GetSetting(GradingEpochSetting), out long epoch) ? epoch : 0;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    /// <summary>
+    /// Sends the machine back to the top of the scale, to be graded down again
+    /// only by what it does from now on.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The grading is deliberately one-way in the short term: a node starts at
+    /// the maximum lane on trust and is corrected by its own measured times.
+    /// That is right while the conditions hold. It is wrong when they change —
+    /// and on this machine they did. The medians that graded it down were
+    /// collected with the card power-limited to 90&#160;W of its 180, and with
+    /// ComfyUI running <c>--lowvram</c>. Raise the limit, drop the flag, and the
+    /// node still carried the slow numbers: the window is the last
+    /// <see cref="MinSamples"/>+ jobs, so the only way back up was to out-run
+    /// the old times at the lane they had already cost it.
+    /// </para>
+    /// <para>
+    /// This moves the line rather than deleting anything. Every job stays in the
+    /// ledger and on the History screen; the ones before the line simply stop
+    /// counting toward what the node is allowed to accept. The next
+    /// <see cref="Score"/> therefore finds no samples, and every capability that
+    /// passes VRAM and has its models comes back as <c>full</c> and
+    /// <c>provisional</c> — the same state a freshly paired machine is in.
+    /// </para>
+    /// </remarks>
+    public static void ResetGrading(Storage.NodeStore store)
+        => store.SetSetting(GradingEpochSetting, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString());
 
     public static NodeAssessment? Load(Storage.NodeStore store)
     {

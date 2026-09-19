@@ -17,6 +17,18 @@
                                Style="{StaticResource Muted}" HorizontalAlignment="Center" Margin="0,8,0,0" TextAlignment="Center"/>
                     <Button Style="{StaticResource ChromeButton}" Content="ประเมินเครื่องใหม่" Command="{Binding RunBenchmark}"
                             IsEnabled="{Binding BenchmarkRunning, Converter={StaticResource Not}}" Margin="0,12,0,0" Width="200"/>
+
+                    <!-- ทางกลับขึ้นเลนสูงสุด สำหรับคนที่แก้เหตุที่ทำให้ช้าแล้ว
+                         (ปลดเพดานไฟ เลิกโหมดประหยัด VRAM) ไม่งั้นต้องวิ่งชนะเวลาเก่า
+                         ทั้งที่โดนลดเลนไปแล้ว -->
+                    <Button Style="{StaticResource GoldButton}" Content="ประเมินใหม่แบบเต็มกำลัง" Command="{Binding RunBenchmarkMaximum}"
+                            IsEnabled="{Binding BenchmarkRunning, Converter={StaticResource Not}}" Margin="0,8,0,0" Width="200"/>
+                    <TextBlock Style="{StaticResource Muted}" TextWrapping="Wrap" TextAlignment="Center" Margin="0,7,0,0"
+                               Text="ตั้งเลนกลับไปที่เกณฑ์สูงสุด แล้วให้เวลาจริงจากงานใหม่เป็นตัวปรับ — ประวัติงานเดิมไม่ถูกลบ"/>
+                    <TextBlock Style="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,7,0,0"
+                               Foreground="{StaticResource GoldAccentText}"
+                               Visibility="{Binding HasGradingReset, Converter={StaticResource Vis}}"
+                               Text="{Binding GradingSinceText}"/>
                 </StackPanel>
             </Border>
             <!-- Only while a measurement is actually running -->

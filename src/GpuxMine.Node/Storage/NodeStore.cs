@@ -519,7 +519,14 @@ public sealed class NodeStore : IDisposable
     /// about how long the work takes.
     /// </para>
     /// </remarks>
-    public double? MedianJobSeconds(string kind, int minSamples = 3, int window = 25)
+    /// <param name="sinceUnixMs">
+    /// Ignore anything finished before this instant. The owner's way back to a
+    /// maximum assessment: the rows stay — the History screen still shows every
+    /// job — but grading starts again from the work done after it. Without this
+    /// a machine measured on a bad day carried those seconds around in its
+    /// median, and the only way out was to out-run them.
+    /// </param>
+    public double? MedianJobSeconds(string kind, int minSamples = 3, int window = 25, long? sinceUnixMs = null)
     {
         using var connection = Open();
         using var command = connection.CreateCommand();
@@ -531,11 +538,13 @@ public sealed class NodeStore : IDisposable
                AND started_at IS NOT NULL
                AND completed_at IS NOT NULL
                AND completed_at > started_at
+               AND completed_at >= $since
              ORDER BY completed_at DESC
              LIMIT $window
             """;
         command.Parameters.AddWithValue("$kind", kind);
         command.Parameters.AddWithValue("$window", window);
+        command.Parameters.AddWithValue("$since", sinceUnixMs ?? 0L);
 
         var samples = new List<double>();
         using (var reader = command.ExecuteReader())
@@ -550,6 +559,30 @@ public sealed class NodeStore : IDisposable
         return samples.Count % 2 == 1
             ? samples[middle]
             : (samples[middle - 1] + samples[middle]) / 2;
+    }
+
+    /// <summary>
+    /// How many completed jobs of a kind currently count toward grading, so the
+    /// Benchmark screen can say "2 of 3" rather than leaving the owner to guess
+    /// when the provisional lane turns into a measured one.
+    /// </summary>
+    public int GradedJobCount(string kind, long? sinceUnixMs = null)
+    {
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT COUNT(*)
+              FROM jobs
+             WHERE kind = $kind
+               AND status = 'completed'
+               AND started_at IS NOT NULL
+               AND completed_at IS NOT NULL
+               AND completed_at > started_at
+               AND completed_at >= $since
+            """;
+        command.Parameters.AddWithValue("$kind", kind);
+        command.Parameters.AddWithValue("$since", sinceUnixMs ?? 0L);
+        return Convert.ToInt32(command.ExecuteScalar() ?? 0);
     }
 
     // ------------------------------------------------------------- log

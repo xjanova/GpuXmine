@@ -180,6 +180,17 @@ public sealed class NodeAssessment
     [JsonPropertyName("failed")] public string? Failed { get; set; }
 
     /// <summary>
+    /// When the owner last sent this machine back to a maximum assessment. Null
+    /// when grading has always counted every job, which is the normal case.
+    /// </summary>
+    /// <remarks>
+    /// Kept on the report so the Benchmark screen can say the lanes are back at
+    /// the top on purpose, rather than leaving a node that was "slow" yesterday
+    /// and "full" today looking like it changed its mind on its own.
+    /// </remarks>
+    [JsonPropertyName("gradingSince")] public DateTimeOffset? GradingSince { get; set; }
+
+    /// <summary>
     /// Assessments go stale: drivers change, other software starts competing
     /// for the card, a GPU gets swapped. A month is long enough not to be a
     /// nuisance and short enough that the pool is not dispatching on a year-old

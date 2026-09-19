@@ -1,3 +1,4 @@
+using GpuxMine.Core.Net;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
@@ -28,7 +29,7 @@ public sealed class MainViewModel : ObservableObject
     private readonly NodeHost _host;
     private readonly Dispatcher _ui;
     private readonly DispatcherTimer _tick;
-    private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(30) };
+    private readonly HttpClient _http = NodeHttp.Create(TimeSpan.FromSeconds(30));
 
     public MainViewModel(NodeHost host, Dispatcher ui)
     {
@@ -82,6 +83,7 @@ public sealed class MainViewModel : ObservableObject
         ExportLog = RelayCommand.Of(ExportLogToFile);
         RunDiagnostics = RelayCommand.Of(() => _ = RunDiagnosticsAsync());
         RunBenchmark = RelayCommand.Of(() => _ = RunBenchmarkAsync());
+        RunBenchmarkMaximum = RelayCommand.Of(() => _ = RunBenchmarkMaximumAsync());
         PairNode = RelayCommand.Of(() => _ = PairNodeAsync());
         SetHistoryWindow = new RelayCommand(p => HistoryWindowDays = int.Parse((string)p!));
         RefreshHistory = RelayCommand.Of(LoadHistory);
@@ -690,7 +692,7 @@ public sealed class MainViewModel : ObservableObject
     {
         try
         {
-            string path = Path.Combine(_host.Options.DataDirectory, $"gpuxmine-{DateTime.Now:yyyyMMdd-HHmmss}.log");
+            string path = Path.Combine(_host.Options.DataDirectory, $"gpuxmine-{DateTime.Now.ToString("yyyyMMdd-HHmmss", System.Globalization.CultureInfo.InvariantCulture)}.log");
             File.WriteAllText(path, _host.Log.Export(), Encoding.UTF8);
             _host.Log.Info($"[cfg] log exported to {path}");
             Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{path}\"") { UseShellExecute = true });
@@ -897,6 +899,26 @@ public sealed class MainViewModel : ObservableObject
     /// </remarks>
     public RelayCommand RunBenchmark { get; }
 
+    /// <summary>
+    /// Re-measure, and grade from the top again.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A plain re-assessment re-times the card, but the lanes come from the
+    /// median of the jobs this machine has finished — so a node graded down
+    /// under conditions that have since changed stays down. That is the case
+    /// this exists for: the owner's card was running at 90&#160;W of its 180 and
+    /// ComfyUI at <c>--lowvram</c> when its times were taken. Fix both and the
+    /// old seconds still sit in the median.
+    /// </para>
+    /// <para>
+    /// Separate from the ordinary button rather than folded into it, because
+    /// most re-assessments should keep the evidence. This one throws away a
+    /// verdict the machine earned, and that is a decision, not a refresh.
+    /// </para>
+    /// </remarks>
+    public RelayCommand RunBenchmarkMaximum { get; }
+
     public bool BenchmarkRunning { get; private set; }
     public int AssessmentScore { get; private set; }
     public string AssessmentScoreText { get; private set; } = "—";
@@ -1063,15 +1085,47 @@ public sealed class MainViewModel : ObservableObject
                 ? $"เพดานไฟการ์ด {report.PowerLimitW} W จากสเปค {report.PowerDefaultW} W ({report.PowerPct}%)\n"
                 : "") +
             $"โมเดลในเครื่อง: checkpoint {report.Checkpoints.Count} · upscaler {report.Upscalers.Count} · diffusion {report.DiffusionModels.Count}\n" +
-            $"วัดเมื่อ {report.MeasuredAt.ToLocalTime():yyyy-MM-dd HH:mm}";
+            $"วัดเมื่อ {report.MeasuredAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture)}" +
+            // Only when the owner has actually moved the line. A node that has
+            // never been reset should not carry a sentence about resetting.
+            (report.GradingSince is { } since
+                ? $"\nนับเกรดจากงานตั้งแต่ {since.ToLocalTime().ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture)} เป็นต้นไป"
+                : "");
+        Raise(nameof(GradingSinceText)); Raise(nameof(HasGradingReset));
     }
 
-    private async Task RunBenchmarkAsync()
+    public bool HasGradingReset => _shownAssessment?.GradingSince is not null;
+
+    public string GradingSinceText => _shownAssessment?.GradingSince is { } since
+        ? $"เลนทั้งหมดถูกตั้งกลับไปที่เกณฑ์สูงสุดเมื่อ {since.ToLocalTime().ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture)} — "
+          + $"งานก่อนหน้านั้นยังอยู่ในประวัติ แต่ไม่ถูกนับในการจัดเลนอีก จะเริ่มปรับตามเวลาจริงเมื่อทำงานครบ {GpuxMine.Node.Assessment.Assessor.MinSamples} ชิ้นต่อประเภท"
+        : "";
+
+    private async Task RunBenchmarkMaximumAsync()
+    {
+        if (BenchmarkRunning) return;
+
+        // Asked first, because this discards a verdict the machine earned and
+        // can put it back in a lane it may not be able to hold. The node takes
+        // work on the strength of that lane, so getting it wrong costs the
+        // owner a missed deadline, not just a wrong number on a screen.
+        var ok = MessageBox.Show(
+            "ตั้งการจัดเลนกลับไปที่เกณฑ์สูงสุด แล้วประเมินใหม่?\n\n"
+            + "งานที่ทำไปแล้วจะยังอยู่ในประวัติทั้งหมด แต่จะไม่ถูกนับในการตัดสินว่ารับงานประเภทไหนได้อีก "
+            + "เครื่องจะกลับไปรับงานเต็มความเร็วทุกประเภทที่ VRAM และโมเดลผ่าน แล้วค่อยปรับตามเวลาจริงใหม่\n\n"
+            + "ควรใช้เมื่อแก้สิ่งที่ทำให้ช้าแล้ว เช่น ปลดเพดานไฟการ์ด หรือเลิกรัน ComfyUI แบบ --lowvram",
+            "ประเมินใหม่แบบเต็มกำลัง", MessageBoxButton.YesNo, MessageBoxImage.Question);
+        if (ok != MessageBoxResult.Yes) return;
+
+        await RunBenchmarkAsync(fromMaximum: true);
+    }
+
+    private async Task RunBenchmarkAsync(bool fromMaximum = false)
     {
         if (BenchmarkRunning) return;
         try
         {
-            await _host.RunAssessmentAsync();
+            await _host.RunAssessmentAsync(fromMaximum: fromMaximum);
         }
         catch (Exception ex)
         {
