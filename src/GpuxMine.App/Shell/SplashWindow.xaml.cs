@@ -58,13 +58,20 @@ public partial class SplashWindow : Window, INotifyPropertyChanged
     /// The shortest time a step is allowed to stay on screen.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Startup finished in under a second, so the first build of this screen
     /// flashed and vanished before any of it could be read — which defeats the
-    /// point of saying what is being checked. A floor per step gives about a
-    /// second and a quarter in total, and adds nothing when the work itself
-    /// takes longer.
+    /// point of saying what is being checked. A floor per step is what makes it
+    /// readable, and it adds nothing when the work itself takes longer.
+    /// </para>
+    /// <para>
+    /// 520 ms across five steps is about two and a half seconds in total: long
+    /// enough to read a line of Thai and see the answer under it, and long
+    /// enough for the logo to finish arriving. The first attempt at a quarter
+    /// second was still too quick to follow.
+    /// </para>
     /// </remarks>
-    private static readonly TimeSpan MinimumOnScreen = TimeSpan.FromMilliseconds(260);
+    private static readonly TimeSpan MinimumOnScreen = TimeSpan.FromMilliseconds(520);
 
     private DateTime _stepStarted = DateTime.UtcNow;
 
@@ -116,6 +123,12 @@ public partial class SplashWindow : Window, INotifyPropertyChanged
     /// first frame and then freeze until everything was finished — which is the
     /// opposite of the point. Background priority: the render pass and nothing
     /// queued behind it.
+    /// </remarks>
+    /// <remarks>
+    /// Background priority is below Render, so draining to it lets the frame —
+    /// and the running animations, which tick above it — go through first. That
+    /// is what keeps the zoom and the shine moving while start-up work holds
+    /// the UI thread.
     /// </remarks>
     private void Pump() =>
         Dispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.Background);

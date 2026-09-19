@@ -6,6 +6,44 @@
         WindowStartupLocation="CenterScreen" ShowInTaskbar="False" Topmost="True"
         ResizeMode="NoResize">
 
+    <Window.Triggers>
+        <EventTrigger RoutedEvent="Loaded">
+            <BeginStoryboard>
+                <Storyboard>
+                    <!-- เข้ามาแบบซูม: เล็กกว่าจริงแล้วคลี่ออก
+                         CubicEase ขาออก ทำให้หยุดนิ่งเองโดยไม่กระตุกตอนจบ -->
+                    <DoubleAnimation Storyboard.TargetName="LogoScale" Storyboard.TargetProperty="ScaleX"
+                                     From="0.72" To="1" Duration="0:0:0.75">
+                        <DoubleAnimation.EasingFunction><CubicEase EasingMode="EaseOut"/></DoubleAnimation.EasingFunction>
+                    </DoubleAnimation>
+                    <DoubleAnimation Storyboard.TargetName="LogoScale" Storyboard.TargetProperty="ScaleY"
+                                     From="0.72" To="1" Duration="0:0:0.75">
+                        <DoubleAnimation.EasingFunction><CubicEase EasingMode="EaseOut"/></DoubleAnimation.EasingFunction>
+                    </DoubleAnimation>
+                    <DoubleAnimation Storyboard.TargetName="LogoBox" Storyboard.TargetProperty="Opacity"
+                                     From="0" To="1" Duration="0:0:0.45"/>
+
+                    <!-- คำโปรยกับเลขเวอร์ชันตามมาทีหลัง ไม่ขึ้นพร้อมกันทั้งหมด -->
+                    <DoubleAnimation Storyboard.TargetName="Tagline" Storyboard.TargetProperty="Opacity"
+                                     From="0" To="1" BeginTime="0:0:0.35" Duration="0:0:0.4"/>
+
+                    <!-- ประกายโลหะ: แถบสว่างแคบกวาดทแยงผ่านตัวอักษร
+                         สามจุดสีเลื่อนพร้อมกันเพื่อให้แถบคงความกว้างไว้ตลอดทาง
+                         เริ่มหลังซูมจบแล้ววนซ้ำ -->
+                    <DoubleAnimation Storyboard.TargetName="ShineLead" Storyboard.TargetProperty="Offset"
+                                     From="-0.45" To="1.05" BeginTime="0:0:0.6" Duration="0:0:1.3"
+                                     RepeatBehavior="Forever"/>
+                    <DoubleAnimation Storyboard.TargetName="ShinePeak" Storyboard.TargetProperty="Offset"
+                                     From="-0.30" To="1.20" BeginTime="0:0:0.6" Duration="0:0:1.3"
+                                     RepeatBehavior="Forever"/>
+                    <DoubleAnimation Storyboard.TargetName="ShineTail" Storyboard.TargetProperty="Offset"
+                                     From="-0.15" To="1.35" BeginTime="0:0:0.6" Duration="0:0:1.3"
+                                     RepeatBehavior="Forever"/>
+                </Storyboard>
+            </BeginStoryboard>
+        </EventTrigger>
+    </Window.Triggers>
+
     <Border CornerRadius="12" Background="{StaticResource ChromePanel}"
             BorderBrush="{StaticResource ChromeBorderDark}" BorderThickness="1">
         <Border.Effect>
@@ -20,13 +58,40 @@
 
             <!-- โลโก้ + ชื่อ -->
             <StackPanel Grid.Row="0" VerticalAlignment="Center" HorizontalAlignment="Center" Margin="0,6,0,0">
-                <Image Source="/Assets/logo.png" Width="230" RenderOptions.BitmapScalingMode="HighQuality"/>
-                <TextBlock Text="แบ่งปันการ์ดจอ รับงาน AI" Style="{StaticResource Muted}"
-                           HorizontalAlignment="Center" Margin="0,10,0,0"/>
-                <TextBlock Style="{StaticResource Mono}" FontSize="10.5" HorizontalAlignment="Center"
-                           Foreground="{StaticResource InkMuted}" Margin="0,3,0,0">
-                    <Run Text="v"/><Run Text="{Binding Version, Mode=OneWay}"/>
-                </TextBlock>
+                <Grid x:Name="LogoBox" Width="230" RenderTransformOrigin="0.5,0.5" Opacity="0">
+                    <Grid.RenderTransform>
+                        <ScaleTransform x:Name="LogoScale" ScaleX="0.72" ScaleY="0.72"/>
+                    </Grid.RenderTransform>
+
+                    <Image x:Name="LogoImage" Source="/Assets/logo.png" Width="230"
+                           RenderOptions.BitmapScalingMode="HighQuality"/>
+
+                    <!-- แถบประกายถูกตัดด้วยรูปร่างของโลโก้เองผ่าน OpacityMask
+                         จึงวิ่งอยู่บนตัวอักษรเท่านั้น ไม่เลอะพื้นหลัง -->
+                    <Rectangle IsHitTestVisible="False"
+                               Width="{Binding ActualWidth, ElementName=LogoImage}"
+                               Height="{Binding ActualHeight, ElementName=LogoImage}">
+                        <Rectangle.OpacityMask>
+                            <ImageBrush ImageSource="/Assets/logo.png"/>
+                        </Rectangle.OpacityMask>
+                        <Rectangle.Fill>
+                            <LinearGradientBrush StartPoint="0,0.25" EndPoint="1,0.75">
+                                <GradientStop x:Name="ShineLead" Color="#00FFFFFF" Offset="-0.45"/>
+                                <GradientStop x:Name="ShinePeak" Color="#CCFFFFFF" Offset="-0.30"/>
+                                <GradientStop x:Name="ShineTail" Color="#00FFFFFF" Offset="-0.15"/>
+                            </LinearGradientBrush>
+                        </Rectangle.Fill>
+                    </Rectangle>
+                </Grid>
+
+                <StackPanel x:Name="Tagline" Opacity="0">
+                    <TextBlock Text="แบ่งปันการ์ดจอ รับงาน AI" Style="{StaticResource Muted}"
+                               HorizontalAlignment="Center" Margin="0,10,0,0"/>
+                    <TextBlock Style="{StaticResource Mono}" FontSize="10.5" HorizontalAlignment="Center"
+                               Foreground="{StaticResource InkMuted}" Margin="0,3,0,0">
+                        <Run Text="v"/><Run Text="{Binding Version, Mode=OneWay}"/>
+                    </TextBlock>
+                </StackPanel>
             </StackPanel>
 
             <!-- สิ่งที่กำลังตรวจ: ชื่อขั้นตอน ผลลัพธ์ และแถบความคืบหน้า -->
