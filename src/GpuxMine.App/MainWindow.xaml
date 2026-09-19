@@ -41,8 +41,10 @@
                     <RowDefinition Height="26"/>
                 </Grid.RowDefinitions>
 
-                <!-- ===== Title bar (gold) — drag handle ===== -->
-                <Border Grid.Row="0" Background="{StaticResource TitleGold}" BorderBrush="{StaticResource TitleBorder}" BorderThickness="0,0,0,1"
+                <!-- ===== Title bar — drag handle =====
+                     แถบโลหะเข้มที่มีเส้นทองอยู่ในภาพแล้ว จึงไม่ต้องมี BorderThickness
+                     ด้านล่างมาซ้อนอีกเส้น -->
+                <Border Grid.Row="0" Background="{StaticResource HeaderStrip}" BorderBrush="{StaticResource TitleBorder}" BorderThickness="0"
                         MouseLeftButtonDown="TitleBar_MouseLeftButtonDown" CornerRadius="6,6,0,0">
                     <!-- สองคอลัมน์ ไม่ใช่ทับกันในช่องเดียว: ปุ่มจองที่ของตัวเองไว้เสมอ
                          ส่วนชื่อ/เวอร์ชันทางซ้ายย่อและตัดท้ายด้วย … เมื่อที่ไม่พอ -->

@@ -41,6 +41,12 @@
   <ItemGroup>
     <Resource Include="Assets\Fonts\ShareTechMono-Regular.ttf" />
     <Resource Include="Assets\logo.png" />
+    <!-- พื้นผิวที่ codex วาดมาให้ตามพาเลตใน Theme.xaml -->
+    <Resource Include="Assets\gfx\bg-tile.png" />
+    <Resource Include="Assets\gfx\header-strip.png" />
+    <Resource Include="Assets\gfx\button-plate.png" />
+    <Resource Include="Assets\gfx\button-plate-hover.png" />
+    <Resource Include="Assets\gfx\panel-bezel.png" />
     <Resource Include="Assets\icon.png" />
     <Resource Include="Assets\gpuxmine.ico" />
   </ItemGroup>

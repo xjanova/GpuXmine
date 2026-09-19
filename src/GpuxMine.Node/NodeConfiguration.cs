@@ -30,11 +30,52 @@ public static class NodeConfiguration
 
         string resolved = first.DataDirectory;
         if (string.Equals(resolved, NodeOptions.DefaultDataDirectory(), StringComparison.OrdinalIgnoreCase))
-            return first;
+            return Rescued(first);
 
         // Pass two: the same sources, plus the identity file that actually
         // belongs to this node. Command line and environment still win over it.
-        return Compose(args, resolved).Get<NodeOptions>() ?? first;
+        return Rescued(Compose(args, resolved).Get<NodeOptions>() ?? first);
+    }
+
+    /// <summary>
+    /// Last resort when the configuration came back without an identity but one
+    /// is sitting on disk.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The installed client has been seen starting with an empty worker id
+    /// while <c>agent.json</c> was present and correct — twice within twenty
+    /// minutes on 2026-09-19, with good starts either side of it from the same
+    /// binary. Composing the configuration in isolation has never reproduced
+    /// it, so the cause is still open; what is not open is the cost. A node
+    /// with no worker id never opens the relay socket. It comes up, shows a
+    /// window, and earns nothing until somebody restarts it, and nothing on
+    /// screen says why.
+    /// </para>
+    /// <para>
+    /// This does not paper over a node that is genuinely unregistered: it only
+    /// fills in what a readable file already says. When there is no file, or it
+    /// has no identity in it, the options come back exactly as composed.
+    /// </para>
+    /// </remarks>
+    private static NodeOptions Rescued(NodeOptions options)
+    {
+        if (!string.IsNullOrWhiteSpace(options.WorkerId)) return options;
+
+        foreach (string directory in new[] { options.DataDirectory, NodeOptions.DefaultDataDirectory(), NodeOptions.LegacyDataDirectory() })
+        {
+            if (NodeIdentityFile.ReadDirect(NodeIdentityFile.PathIn(directory)) is not { } identity) continue;
+
+            return options with
+            {
+                WorkerId = identity.WorkerId,
+                Token = identity.Token,
+                RelayUrl = string.IsNullOrWhiteSpace(identity.RelayUrl) ? options.RelayUrl : identity.RelayUrl,
+                IdentityRescuedFrom = NodeIdentityFile.PathIn(directory),
+            };
+        }
+
+        return options;
     }
 
     private static IConfigurationRoot Compose(string[] args, string? extraIdentityDirectory)

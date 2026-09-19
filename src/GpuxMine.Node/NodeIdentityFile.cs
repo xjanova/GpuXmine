@@ -27,6 +27,58 @@ public static class NodeIdentityFile
     public static string PathIn(string dataDirectory) => Path.Combine(dataDirectory, FileName);
 
     /// <summary>
+    /// Reads the worker id, token and relay straight out of the file, bypassing
+    /// the configuration stack entirely.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A safety net for a failure that has been seen and is not yet explained.
+    /// The installed client occasionally starts with an empty worker id while
+    /// this file sits on disk, complete and unchanged — recorded on this
+    /// machine at 10:43 and again at 10:59 on 2026-09-19, with a correct start
+    /// nine minutes later from the same binary and the same file. Building the
+    /// configuration in isolation resolves it every time, with and without
+    /// arguments, inside and outside the install directory, so the fault is not
+    /// in the paths it looks at.
+    /// </para>
+    /// <para>
+    /// What that run costs is not cosmetic: a node with no worker id never
+    /// opens the relay socket, so the machine comes up, looks like it is
+    /// running, and earns nothing until somebody restarts it.
+    /// </para>
+    /// <para>
+    /// So when the composed configuration has no identity, the file is read
+    /// again by hand. If it has one, that run is rescued; if it genuinely has
+    /// none, nothing changes and the node is correctly unregistered.
+    /// </para>
+    /// </remarks>
+    public static (string WorkerId, string Token, string? RelayUrl)? ReadDirect(string path)
+    {
+        try
+        {
+            if (!File.Exists(path)) return null;
+
+            Dictionary<string, JsonElement> values = Read(path);
+
+            string? Find(string key) => values
+                .FirstOrDefault(kv => kv.Key.Equals(key, StringComparison.OrdinalIgnoreCase))
+                .Value is { ValueKind: JsonValueKind.String } element ? element.GetString() : null;
+
+            string? worker = Find("WorkerId");
+            string? token = Find("Token");
+            if (string.IsNullOrWhiteSpace(worker) || string.IsNullOrWhiteSpace(token)) return null;
+
+            return (worker, token, Find("RelayUrl"));
+        }
+        catch
+        {
+            // A rescue that throws is worse than no rescue: the node would stop
+            // starting at all, which is the thing this exists to prevent.
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Writes the credentials, keeping any settings already in the file.
     /// </summary>
     /// <remarks>

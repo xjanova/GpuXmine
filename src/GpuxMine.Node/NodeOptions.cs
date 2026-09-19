@@ -1,6 +1,6 @@
 namespace GpuxMine.Node;
 
-public sealed class NodeOptions
+public sealed record NodeOptions
 {
     /// <summary>
     /// The relay this node dials out to. Overridden by the identity file the
@@ -83,6 +83,17 @@ public sealed class NodeOptions
     /// <summary>Where the data used to live. Read once, to rescue it, then never again.</summary>
     public static string LegacyDataDirectory() =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GpuxMine");
+
+    /// <summary>
+    /// Set when the identity had to be read straight from disk because the
+    /// configuration came back without one. Null on every healthy start.
+    /// </summary>
+    /// <remarks>
+    /// Reported in the log rather than kept quiet: this is the evidence that
+    /// the unexplained empty-identity start happened again, and which file
+    /// saved it.
+    /// </remarks>
+    public string? IdentityRescuedFrom { get; init; }
 
     public bool Validate(out string error)
     {

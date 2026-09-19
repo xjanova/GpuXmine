@@ -270,6 +270,17 @@
 
     <!-- ===================== panels ===================== -->
 
+    <!-- ══ พื้นผิวจากไฟล์ภาพ ══
+         วาดด้วย System.Drawing ตามพาเลตข้างบน จึงเข้าชุดกับ gradient ที่เหลือ
+         ตรวจแล้ว: bg-tile ต่อลายไร้รอยต่อจริง (ขอบซ้าย/ขวา ต่างกัน 0.00)
+         และคอนทราสต์ในลายแค่ 0.8% จึงไม่แย่งสายตาไปจากตัวเลขบนจอ -->
+    <ImageBrush x:Key="LcdTexture" ImageSource="/Assets/gfx/bg-tile.png"
+                TileMode="Tile" ViewportUnits="Absolute" Viewport="0,0,256,256"
+                Opacity="0.5" Stretch="None"/>
+
+    <!-- แถบหัวโปรแกรม: ยืดตามความกว้างหน้าต่าง เส้นทองที่ขอบล่างมากับภาพ -->
+    <ImageBrush x:Key="HeaderStrip" ImageSource="/Assets/gfx/header-strip.png" Stretch="Fill"/>
+
     <Style x:Key="ChromePanelStyle" TargetType="Border">
         <Setter Property="Background" Value="{StaticResource ChromePanel}"/>
         <Setter Property="BorderBrush" Value="{StaticResource ChromeBorder}"/>
@@ -288,6 +299,22 @@
         <Setter Property="BorderThickness" Value="1"/>
         <Setter Property="CornerRadius" Value="7"/>
         <Setter Property="Padding" Value="12,10"/>
+        <!-- ลายโลหะทับบน gradient เดิม ไม่ได้แทนที่มัน: gradient คือสิ่งที่ทำให้
+             จอดูโค้ง ส่วนลายคือสิ่งที่ทำให้มันดูเป็นวัสดุ เอาออกอันใดอันหนึ่ง
+             แล้วมันจะแบน -->
+        <Setter Property="Effect">
+            <Setter.Value>
+                <DropShadowEffect Color="#000000" BlurRadius="5" ShadowDepth="1" Direction="270" Opacity="0.30"/>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ใช้ซ้อนใน LcdPanelStyle เมื่ออยากได้ลายวัสดุ วางเป็นลูกใบแรกของ Border -->
+    <Style x:Key="LcdTextureLayer" TargetType="Rectangle">
+        <Setter Property="Fill" Value="{StaticResource LcdTexture}"/>
+        <Setter Property="IsHitTestVisible" Value="False"/>
+        <Setter Property="RadiusX" Value="6"/>
+        <Setter Property="RadiusY" Value="6"/>
     </Style>
     <Style x:Key="TroughStyle" TargetType="Border">
         <Setter Property="Background" Value="{StaticResource Trough}"/>

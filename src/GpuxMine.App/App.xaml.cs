@@ -177,6 +177,8 @@ public partial class App : Application
             ? $"{options.WorkerId} · relay {options.RelayUrl}"
             : "ยังไม่ได้ลงทะเบียน — กรอกรหัสจับคู่ในหน้า Settings";
         _host.Log.Info($"[cfg] ตัวตนเครื่องตอนเปิด: {identity}");
+        if (options.IdentityRescuedFrom is { } rescued)
+            _host.Log.Warn($"[warn] ตั้งค่าอ่านตัวตนไม่เจอ ต้องอ่านจากไฟล์ตรง ๆ: {rescued} — เกิดอาการที่ยังหาสาเหตุไม่ได้ซ้ำอีกครั้ง");
         splash?.Done(identity);
 
         splash?.Step("เตรียมหน้าจอ");
