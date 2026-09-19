@@ -1,6 +1,7 @@
 <UserControl x:Class="GpuxMine.App.Views.HistoryView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:c="clr-namespace:GpuxMine.App.Controls">
     <Grid>
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="13"/><RowDefinition Height="Auto"/><RowDefinition Height="10"/><RowDefinition Height="*"/></Grid.RowDefinitions>
 
@@ -70,7 +71,7 @@
                     </StackPanel>
                 </Border>
 
-                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" c:WheelScroll.Bubble="True">
                     <ItemsControl ItemsSource="{Binding HistoryRows}" AlternationCount="2">
                         <ItemsControl.ItemTemplate>
                             <DataTemplate>

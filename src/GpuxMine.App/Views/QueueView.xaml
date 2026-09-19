@@ -1,6 +1,7 @@
 <UserControl x:Class="GpuxMine.App.Views.QueueView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:c="clr-namespace:GpuxMine.App.Controls">
     <Grid>
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="13"/><RowDefinition Height="*"/></Grid.RowDefinitions>
 
@@ -28,7 +29,7 @@
                         <TextBlock Grid.Column="6" Text="STATUS" Style="{StaticResource SectionLabel}" Margin="0"/>
                     </Grid>
                 </Border>
-                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" c:WheelScroll.Bubble="True">
                     <ItemsControl ItemsSource="{Binding JobRows}" AlternationCount="2">
                         <ItemsControl.ItemTemplate>
                             <DataTemplate>

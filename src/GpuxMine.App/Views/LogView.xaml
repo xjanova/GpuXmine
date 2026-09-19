@@ -40,7 +40,7 @@
         </Grid>
 
         <Border Grid.Row="2" Background="{StaticResource Console}" BorderBrush="{StaticResource LcdBorder}" BorderThickness="1" CornerRadius="9" Padding="14,10">
-            <ScrollViewer VerticalScrollBarVisibility="Auto" x:Name="Scroller">
+            <ScrollViewer VerticalScrollBarVisibility="Auto" x:Name="Scroller" c:WheelScroll.Bubble="True">
                 <ItemsControl ItemsSource="{Binding VisibleLog}">
                     <ItemsControl.ItemTemplate>
                         <DataTemplate>
