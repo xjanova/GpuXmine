@@ -6,6 +6,7 @@ using System.Text;
 using System.Windows;
 using System.Windows.Threading;
 using GpuxMine.Core;
+using GpuxMine.Core.Licensing;
 using GpuxMine.Core.Updates;
 using GpuxMine.Node;
 
@@ -86,6 +87,7 @@ public sealed class MainViewModel : ObservableObject
         RefreshHistory = RelayCommand.Of(LoadHistory);
         SetRetention = new RelayCommand(p => RetentionDays = int.Parse((string)p!));
         PurgeNow = RelayCommand.Of(PurgeHistoryNow);
+        RefreshReferral = RelayCommand.Of(() => _ = LoadReferralAsync());
         ChangePairing = RelayCommand.Of(BeginRepair);
         CancelPairingChange = RelayCommand.Of(EndRepair);
         OpenUrl = new RelayCommand(p => OpenInBrowser((string)p!));
@@ -96,6 +98,7 @@ public sealed class MainViewModel : ObservableObject
         // rendering, and re-reading it at the prototype's 1.4 s cadence keeps
         // the UI live without flooding the dispatcher.
         LoadHistory();
+        _ = LoadReferralAsync();
 
         _tick = new DispatcherTimer(NodeHost.SensePeriod, DispatcherPriority.Background, (_, _) => Pull(), ui);
         _tick.Start();
@@ -472,6 +475,67 @@ public sealed class MainViewModel : ObservableObject
         public bool IsFailed => j.Status == JobStatus.Failed;
         public string? Error => j.Error;
         public string Output => j.OutputFilename ?? "";
+    }
+
+    // ---------------------------------------------------------- referrals
+
+    private ReferralSummary? _referral;
+
+    /// <summary>
+    /// The owner's invite standing, read from XMAN Studio.
+    /// </summary>
+    /// <remarks>
+    /// This screen used to be prose and em dashes — an invite code it could not
+    /// show and an earnings figure that was permanently "—" — while the website
+    /// held the real numbers the whole time.
+    /// </remarks>
+    public bool ReferralLoaded => _referral is not null;
+    public bool ReferralEnrolled => _referral?.Enrolled == true;
+    public bool ReferralNotEnrolled => _referral is not null && !_referral.Enrolled;
+
+    public string ReferralCodeText => _referral?.ReferralCode is { Length: > 0 } code
+        ? code
+        : _referral is null ? "กำลังอ่านจาก XMAN Studio…" : "ยังไม่ได้สมัครเป็นผู้แนะนำ";
+
+    public string ReferralCountText => _referral is { Enrolled: true } r
+        ? $"{r.TotalReferrals:N0} คน · ทำงานแล้ว {r.TotalConversions:N0}"
+        : "—";
+
+    /// <summary>Money as the website reports it, in baht. Nothing is converted on the way.</summary>
+    public string ReferralPendingText => _referral is { Enrolled: true } r ? $"฿{r.TotalPending:N2}" : "—";
+    public string ReferralEarnedText => _referral is { Enrolled: true } r ? $"฿{r.TotalEarned:N2}" : "—";
+    public string ReferralPaidText => _referral is { Enrolled: true } r ? $"฿{r.TotalPaid:N2}" : "—";
+
+    public string ReferralRateText => _referral is { Enrolled: true } r
+        ? $"ส่วนแบ่ง {r.CommissionRate:0.##}% ของรายได้คนที่คุณชวน"
+        : "";
+
+    /// <summary>Where the button goes: joining when not enrolled, the dashboard when enrolled.</summary>
+    public string ReferralLinkUrl =>
+        _referral?.DashboardUrl ?? _referral?.JoinUrl ?? ReferralUrl;
+
+    public string ReferralLinkText => ReferralNotEnrolled ? "สมัครเป็นผู้แนะนำ" : "เปิดหน้าแนะนำเพื่อน";
+
+    /// <summary>The link to hand out. Empty until the website says what it is.</summary>
+    public string ReferralShareUrl => _referral?.ReferralUrl ?? "";
+    public bool HasReferralShareUrl => !string.IsNullOrWhiteSpace(ReferralShareUrl);
+
+    public RelayCommand RefreshReferral { get; }
+
+    private async Task LoadReferralAsync()
+    {
+        _referral = await _host.FetchReferralAsync();
+        // Discarded on purpose: the raises only have to reach the UI thread,
+        // and waiting on the dispatcher operation from here would be waiting
+        // on ourselves.
+        _ = _ui.BeginInvoke(() =>
+        {
+            Raise(nameof(ReferralLoaded)); Raise(nameof(ReferralEnrolled)); Raise(nameof(ReferralNotEnrolled));
+            Raise(nameof(ReferralCodeText)); Raise(nameof(ReferralCountText));
+            Raise(nameof(ReferralPendingText)); Raise(nameof(ReferralEarnedText)); Raise(nameof(ReferralPaidText));
+            Raise(nameof(ReferralRateText)); Raise(nameof(ReferralLinkUrl)); Raise(nameof(ReferralLinkText));
+            Raise(nameof(ReferralShareUrl)); Raise(nameof(HasReferralShareUrl));
+        });
     }
 
     // ------------------------------------------------------------ history

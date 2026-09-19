@@ -283,6 +283,17 @@ public sealed class NodeHost : IAsyncDisposable
         };
     }
 
+    /// <summary>
+    /// Asks XMAN Studio what this machine's owner has earned by inviting people.
+    /// </summary>
+    /// <remarks>
+    /// Lives here rather than in the view model because the studio client and
+    /// the node's credentials both belong to the host; the screen should not be
+    /// holding a token.
+    /// </remarks>
+    public Task<Core.Licensing.ReferralSummary?> FetchReferralAsync(CancellationToken ct = default) =>
+        _studio.ReferralAsync(Options.WorkerId, Options.Token, ct);
+
     // ------------------------------------------------------------- pairing
 
     /// <summary>

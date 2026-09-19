@@ -9,26 +9,82 @@
                     <TextBlock Text="YOUR INVITE CODE" Style="{StaticResource SectionLabel}"/>
                     <Grid>
                         <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                        <!-- รหัสจริงจาก XMAN Studio ไม่ใช่คำเชิญชวนให้ไปดูที่อื่น
+                             ระหว่างที่ยังอ่านไม่เสร็จจะขึ้นว่ากำลังอ่าน ไม่ใช่ขีดกลาง -->
                         <Border Style="{StaticResource LcdPanelStyle}" Padding="14,8">
-                            <TextBlock Text="เชื่อมบัญชี XMAN ID เพื่อรับโค้ด" Style="{StaticResource LcdValue}" FontSize="16" Effect="{x:Null}"/>
+                            <TextBlock Text="{Binding ReferralCodeText}" Style="{StaticResource LcdValue}" FontSize="16" Effect="{x:Null}"
+                                       TextTrimming="CharacterEllipsis"/>
                         </Border>
-                        <Button Grid.Column="1" Style="{StaticResource GoldButton}" Content="เปิดหน้าแนะนำเพื่อน" Command="{Binding OpenUrl}" CommandParameter="{Binding ReferralUrl}" Margin="10,0,0,0" VerticalAlignment="Center"/>
+                        <Button Grid.Column="1" Style="{StaticResource GoldButton}" Content="{Binding ReferralLinkText}"
+                                Command="{Binding OpenUrl}" CommandParameter="{Binding ReferralLinkUrl}" Margin="10,0,0,0" VerticalAlignment="Center"/>
                     </Grid>
-                    <TextBlock Style="{StaticResource Muted}" Margin="0,10,0,0" Text="รับ 5% ของรายได้ผู้ที่คุณเชิญ นาน 12 เดือน · ผู้ถูกเชิญได้ ฿100 หลังทำงานครบ 100 งาน · งานที่แชร์ฟรีไม่นับเป็นรายได้ จึงไม่มีค่าแนะนำจากงานนั้น"/>
+
+                    <!-- ลิงก์ที่เอาไปแจกได้จริง พร้อมปุ่มคัดลอก เพราะการพิมพ์ตามจากจอ
+                         คือวิธีที่คนพิมพ์รหัสตัวเองผิด -->
+                    <Grid Margin="0,10,0,0" Visibility="{Binding HasReferralShareUrl, Converter={StaticResource Vis}}">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                        <TextBox Style="{StaticResource ChromeInput}" Padding="8,5" IsReadOnly="True"
+                                 FontFamily="{StaticResource MonoFont}" FontSize="11"
+                                 Text="{Binding ReferralShareUrl, Mode=OneWay}"/>
+                        <Button Grid.Column="1" Style="{StaticResource ChromeButton}" Content="คัดลอก" Width="80" Margin="8,0,0,0"
+                                Command="{Binding CopyText}" CommandParameter="{Binding ReferralShareUrl}"/>
+                    </Grid>
+
+                    <TextBlock Text="{Binding ReferralRateText}" Style="{StaticResource Body}" Margin="0,10,0,0"
+                               Visibility="{Binding ReferralEnrolled, Converter={StaticResource Vis}}"/>
+                    <TextBlock Style="{StaticResource Muted}" Margin="0,6,0,0" TextWrapping="Wrap"
+                               Text="งานที่แชร์ฟรีไม่นับเป็นรายได้ จึงไม่มีค่าแนะนำจากงานนั้น"/>
                 </StackPanel>
             </Border>
+
             <Border Style="{StaticResource ChromePanelStyle}" Margin="0,13,0,0">
                 <StackPanel>
-                    <TextBlock Text="YOUR NETWORK" Style="{StaticResource SectionLabel}"/>
-                    <TextBlock Style="{StaticResource Muted}" Text="ผังสายงานและรายได้ของแต่ละคนอยู่ที่ XMAN Studio — จะแสดงในหน้านี้เมื่อเชื่อมบัญชี ไม่มีการแสดงรายชื่อสมมติ"/>
+                    <Grid>
+                        <TextBlock Text="YOUR NETWORK" Style="{StaticResource SectionLabel}"/>
+                        <Button Style="{StaticResource ChromeButton}" Content="รีเฟรช" Width="80" HorizontalAlignment="Right"
+                                Command="{Binding RefreshReferral}"/>
+                    </Grid>
+
+                    <!-- ตัวเลขจริงจากเว็บ ไม่ใช่รายชื่อสมมติ -->
+                    <Grid Margin="0,8,0,0" Visibility="{Binding ReferralEnrolled, Converter={StaticResource Vis}}">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0">
+                            <TextBlock Text="ชวนมาแล้ว" Style="{StaticResource Muted}"/>
+                            <TextBlock Text="{Binding ReferralCountText}" Style="{StaticResource BodyBold}" Margin="0,2,0,0" TextWrapping="Wrap"/>
+                        </StackPanel>
+                        <StackPanel Grid.Column="1">
+                            <TextBlock Text="จ่ายแล้ว" Style="{StaticResource Muted}"/>
+                            <TextBlock Text="{Binding ReferralPaidText}" Style="{StaticResource BodyBold}" Margin="0,2,0,0"/>
+                        </StackPanel>
+                        <StackPanel Grid.Column="2">
+                            <TextBlock Text="สะสมทั้งหมด" Style="{StaticResource Muted}"/>
+                            <TextBlock Text="{Binding ReferralEarnedText}" Style="{StaticResource BodyBold}" Margin="0,2,0,0"/>
+                        </StackPanel>
+                    </Grid>
+
+                    <!-- ยังไม่ได้สมัคร: บอกตรง ๆ ว่าต้องทำอะไร ไม่ใช่ปล่อยให้เดา -->
+                    <TextBlock Style="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,0"
+                               Visibility="{Binding ReferralNotEnrolled, Converter={StaticResource Vis}}"
+                               Text="บัญชีนี้ยังไม่ได้สมัครเป็นผู้แนะนำ กดปุ่มด้านบนเพื่อสมัครที่ XMAN Studio แล้วกลับมากดรีเฟรช"/>
+
+                    <TextBlock Style="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,0"
+                               Visibility="{Binding ReferralLoaded, Converter={StaticResource VisInv}}"
+                               Text="ยังอ่านข้อมูลจาก XMAN Studio ไม่ได้ — เครื่องต้องลงทะเบียนแล้วและต่อเน็ตได้ กดรีเฟรชเพื่อลองใหม่"/>
+
+                    <TextBlock Style="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,0"
+                               Visibility="{Binding ReferralEnrolled, Converter={StaticResource Vis}}"
+                               Text="ผังสายงานเต็มและรายได้ของแต่ละคนดูได้ที่ XMAN Studio ตัวเลขข้างบนอ่านมาจากที่นั่นโดยตรง"/>
                 </StackPanel>
             </Border>
         </StackPanel>
+
         <Border Grid.Column="2" Style="{StaticResource LcdPanelStyle}" Padding="14,12" VerticalAlignment="Top">
             <StackPanel>
                 <TextBlock Text="REFERRAL EARNINGS" Style="{StaticResource LcdLabelText}"/>
-                <TextBlock Text="—" Style="{StaticResource LcdValue}" FontSize="40" Margin="0,2,0,4"/>
-                <TextBlock Text="this month · จ่ายรวมกับค่าตอบแทนปกติ" Style="{StaticResource LcdLabelText}" Typography.Capitals="Normal"/>
+                <!-- ยอดที่ยังไม่ได้จ่าย คือตัวเลขที่เจ้าของเครื่องอยากรู้จริง ๆ
+                     ไม่ใช่ยอดสะสมตลอดกาลซึ่งรวมของที่จ่ายไปแล้ว -->
+                <TextBlock Text="{Binding ReferralPendingText}" Style="{StaticResource LcdValue}" FontSize="40" Margin="0,2,0,4"/>
+                <TextBlock Text="ยังไม่ได้จ่าย · จ่ายรวมกับค่าตอบแทนปกติ" Style="{StaticResource LcdLabelText}" Typography.Capitals="Normal" TextWrapping="Wrap"/>
             </StackPanel>
         </Border>
     </Grid>

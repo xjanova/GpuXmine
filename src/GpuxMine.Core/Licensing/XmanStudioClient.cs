@@ -84,6 +84,46 @@ public sealed class XmanStudioClient(HttpClient http, string baseUrl, string pro
     }
 
     /// <summary>
+    /// What this machine's owner has earned by inviting other people.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The Referrals screen used to be prose and dashes: an invite code it
+    /// could not show, a network it said was "on XMAN Studio", and an earnings
+    /// figure that was permanently an em dash. The website has had all of it
+    /// the whole time; nothing asked for it.
+    /// </para>
+    /// <para>
+    /// Authenticated with the worker id and relay token rather than the machine
+    /// id the other calls use. A machine id is derivable by anything running on
+    /// the same computer, and this answer contains what somebody has earned.
+    /// </para>
+    /// </remarks>
+    public async Task<ReferralSummary?> ReferralAsync(string workerId, string token, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(workerId) || string.IsNullOrWhiteSpace(token)) return null;
+
+        try
+        {
+            using HttpResponseMessage response = await http.PostAsJsonAsync(
+                $"{_base}/api/v1/product/{productSlug}/referral",
+                new { worker_id = workerId, token },
+                ct);
+
+            var body = await ReadAsync<ReferralEnvelope>(response, ct);
+            if (!response.IsSuccessStatusCode || body?.Success != true || body.Data is null) return null;
+
+            return body.Data;
+        }
+        catch
+        {
+            // The website being unreachable is not a fault in the node, and the
+            // screen already knows how to say it has nothing yet.
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Exchanges the pairing code from the website for this node's identity.
     /// </summary>
     /// <remarks>
@@ -293,4 +333,37 @@ public sealed class XmanStudioClient(HttpClient http, string baseUrl, string pro
             [JsonPropertyName("download_url")] public string? DownloadUrl { get; set; }
         }
     }
+}
+
+/// <summary>The owner's referral standing, exactly as XMAN Studio reports it.</summary>
+/// <remarks>
+/// Money arrives as baht with two decimals because that is how the website
+/// stores it. It is not converted on the way here: a unit change in transit is
+/// how a figure ends up a hundred times wrong on one screen and right on the
+/// other.
+/// </remarks>
+public sealed class ReferralSummary
+{
+    /// <summary>False when the owner has an account but has not joined the programme.</summary>
+    [JsonPropertyName("enrolled")] public bool Enrolled { get; set; }
+
+    [JsonPropertyName("referral_code")] public string? ReferralCode { get; set; }
+    [JsonPropertyName("referral_url")] public string? ReferralUrl { get; set; }
+    [JsonPropertyName("commission_rate")] public decimal CommissionRate { get; set; }
+    [JsonPropertyName("total_referrals")] public int TotalReferrals { get; set; }
+    [JsonPropertyName("total_conversions")] public int TotalConversions { get; set; }
+    [JsonPropertyName("total_earned")] public decimal TotalEarned { get; set; }
+    [JsonPropertyName("total_paid")] public decimal TotalPaid { get; set; }
+    [JsonPropertyName("total_pending")] public decimal TotalPending { get; set; }
+    [JsonPropertyName("status")] public string? Status { get; set; }
+
+    /// <summary>Where to join, when not enrolled; where to look, when enrolled.</summary>
+    [JsonPropertyName("join_url")] public string? JoinUrl { get; set; }
+    [JsonPropertyName("dashboard_url")] public string? DashboardUrl { get; set; }
+}
+
+internal sealed class ReferralEnvelope
+{
+    [JsonPropertyName("success")] public bool Success { get; set; }
+    [JsonPropertyName("data")] public ReferralSummary? Data { get; set; }
 }
