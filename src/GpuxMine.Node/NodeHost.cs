@@ -1,3 +1,4 @@
+using GpuxMine.Core.Net;
 using GpuxMine.Core;
 using GpuxMine.Core.Licensing;
 using GpuxMine.Core.Updates;
@@ -34,7 +35,7 @@ public sealed class NodeHost : IAsyncDisposable
 
     private static readonly TimeSpan IdleGrace = TimeSpan.FromSeconds(120);
 
-    public NodeOptions Options { get; }
+    public NodeOptions Options { get; private set; }
     public NodeSettings Settings { get; }
     public NodeState State { get; } = new();
     public ActivityLog Log { get; }
@@ -47,7 +48,7 @@ public sealed class NodeHost : IAsyncDisposable
     private readonly IUserActivitySource _activity;
     private readonly IHostHealthSource _health;
     private readonly XmanStudioClient _studio;
-    private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(20) };
+    private readonly HttpClient _http = NodeHttp.Create(TimeSpan.FromSeconds(20));
     private readonly CancellationTokenSource _hostCts = new();
     private readonly List<Task> _background = [];
 
@@ -101,6 +102,10 @@ public sealed class NodeHost : IAsyncDisposable
             Log.Warn($"[warn] ประวัติงานเดิมเสียหาย อ่านไม่ได้ — เริ่มไฟล์ใหม่ ของเดิมเก็บไว้ที่ {kept}");
         Jobs = new JobHistory(Store);
 
+        // The ledger is the second place the identity lives. Done here because
+        // this is the first moment both a database and a log exist.
+        Options = ReconcileIdentity(Options);
+
         var nothing = new NullTelemetry();
         _telemetry = telemetry ?? nothing;
         _activity = activity ?? nothing;
@@ -110,7 +115,7 @@ public sealed class NodeHost : IAsyncDisposable
         Runtime.Job += OnJobEvent;
         Runtime.AssessmentSource = AssessmentForDispatch;
 
-        _studio = new XmanStudioClient(_http, options.XmanStudioUrl);
+        _studio = new XmanStudioClient(_http, options.XmanStudioUrl, log: message => Log.Warn(message));
         Updater = new SelfUpdater(options.UpdateRepo, options.DataDirectory, Log.Warn);
     }
 
@@ -294,6 +299,106 @@ public sealed class NodeHost : IAsyncDisposable
     public Task<Core.Licensing.ReferralSummary?> FetchReferralAsync(CancellationToken ct = default) =>
         _studio.ReferralAsync(Options.WorkerId, Options.Token, ct);
 
+    // ------------------------------------------------------------ identity
+
+    private const string RememberedWorker = "identity-worker";
+    private const string RememberedToken = "identity-token";
+    private const string RememberedRelay = "identity-relay";
+
+    /// <summary>
+    /// Keeps the node's identity in the ledger as well as in <c>agent.json</c>,
+    /// and starts from the ledger when the file could not be read.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A registered machine came up as "ยังไม่ได้ลงทะเบียน" five times on
+    /// 2026-09-19 — at 10:43, 10:59, 21:17, 21:18 and 21:49 — while
+    /// <c>agent.json</c> sat on disk complete and unchanged since 01:49, and
+    /// came up correctly from the same binary at 22:04 and 22:05. A node with
+    /// no worker id never opens the relay socket and never asks XMAN Studio for
+    /// anything that needs a token, so the owner got a window that looked like
+    /// it was running, earned nothing, and showed no referral figures. That is
+    /// the whole of "เปิดใหม่แล้วไม่ต่อ xman".
+    /// </para>
+    /// <para>
+    /// Retrying the read handles the moment; this handles the rest. The two
+    /// copies fail for different reasons — a file being held by something else
+    /// on the machine has nothing to do with SQLite — so a start that cannot
+    /// read one can still read the other. When the ledger is the one that
+    /// answers, the file is written back from it, so the node repairs itself
+    /// instead of depending on this path at every launch.
+    /// </para>
+    /// <para>
+    /// The token sits beside the file it came from, in a folder only this user
+    /// can read, and <c>agent.json</c> already holds it in the clear in that
+    /// same folder. This adds a copy, not an exposure — and it is the copy that
+    /// keeps a machine earning.
+    /// </para>
+    /// </remarks>
+    private NodeOptions ReconcileIdentity(NodeOptions options)
+    {
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(options.WorkerId) && !string.IsNullOrWhiteSpace(options.Token))
+            {
+                Remember(options.WorkerId, options.Token, options.RelayUrl);
+                return options;
+            }
+
+            string? worker = Store.GetSetting(RememberedWorker);
+            string? token = Store.GetSetting(RememberedToken);
+
+            // Genuinely unpaired. Nothing to restore, and nothing to say: the
+            // Settings screen already asks for a pairing code.
+            if (string.IsNullOrWhiteSpace(worker) || string.IsNullOrWhiteSpace(token)) return options;
+
+            string relay = Store.GetSetting(RememberedRelay) is { Length: > 0 } kept ? kept : options.RelayUrl;
+
+            Log.Warn($"[warn] อ่านไฟล์ตัวตนไม่ได้ในรอบนี้ — ใช้ตัวตนที่จำไว้ในฐานข้อมูลแทน: worker {worker}");
+            foreach (string note in NodeConfiguration.IdentityNotes)
+                Log.Warn($"[warn] {note}");
+
+            // Put the file back, so the next start does not need this path.
+            try
+            {
+                NodeIdentityFile.Save(options.DataDirectory, worker, token, relay);
+                Log.Info("[cfg] เขียนไฟล์ตัวตนกลับคืนจากฐานข้อมูลแล้ว");
+            }
+            catch (Exception ex)
+            {
+                Log.Warn($"[warn] เขียนไฟล์ตัวตนกลับคืนไม่ได้: {ex.Message}");
+            }
+
+            return options with
+            {
+                WorkerId = worker,
+                Token = token,
+                RelayUrl = relay,
+                IdentityRescuedFrom = Store.Path,
+            };
+        }
+        catch (Exception ex)
+        {
+            // Never the reason a node fails to start.
+            Log.Warn($"[warn] ตรวจตัวตนเครื่องกับฐานข้อมูลไม่สำเร็จ: {ex.Message}");
+            return options;
+        }
+    }
+
+    private void Remember(string workerId, string token, string relayUrl)
+    {
+        try
+        {
+            if (Store.GetSetting(RememberedWorker) != workerId) Store.SetSetting(RememberedWorker, workerId);
+            if (Store.GetSetting(RememberedToken) != token) Store.SetSetting(RememberedToken, token);
+            if (Store.GetSetting(RememberedRelay) != relayUrl) Store.SetSetting(RememberedRelay, relayUrl);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"[warn] จำตัวตนเครื่องลงฐานข้อมูลไม่ได้: {ex.Message}");
+        }
+    }
+
     // ------------------------------------------------------------- pairing
 
     /// <summary>
@@ -333,6 +438,8 @@ public sealed class NodeHost : IAsyncDisposable
             Log.Warn($"[net] เขียนไฟล์ตั้งค่าไม่ได้: {ex.Message}");
             return (false, $"ลงทะเบียนสำเร็จแต่บันทึกลงเครื่องไม่ได้: {ex.Message} — กรุณาขอรหัสใหม่");
         }
+
+        Remember(credentials.WorkerId, credentials.Token, credentials.RelayUrl ?? Options.RelayUrl);
 
         Log.Info($"[net] ลงทะเบียนเครื่องสำเร็จ — worker {credentials.WorkerId}"
                  + (credentials.Owner is null ? "" : $" ของ {credentials.Owner}"));
@@ -403,7 +510,14 @@ public sealed class NodeHost : IAsyncDisposable
     }
 
     /// <summary>Measures this machine. Safe to call from the UI — only one runs at a time.</summary>
-    public async Task<AssessmentReport> RunAssessmentAsync(CancellationToken ct = default)
+    /// <param name="fromMaximum">
+    /// Start the grading over from the top rather than continuing from what the
+    /// machine has measured so far. For the owner who has changed the
+    /// conditions — raised a power limit, taken ComfyUI off <c>--lowvram</c>,
+    /// moved the box off a warm shelf — and would otherwise have to out-run the
+    /// times those conditions produced before the lanes would come back up.
+    /// </param>
+    public async Task<AssessmentReport> RunAssessmentAsync(CancellationToken ct = default, bool fromMaximum = false)
     {
         await _assessGate.WaitAsync(ct);
         try
@@ -411,6 +525,23 @@ public sealed class NodeHost : IAsyncDisposable
             _assessing = true;
             State.SetAssessing(true);
             Reevaluate();
+
+            if (fromMaximum)
+            {
+                // Before the measurement, not after: Score() reads the line
+                // while it runs, and the whole point is that it finds nothing
+                // on the far side of it.
+                try
+                {
+                    Assessor.ResetGrading(Store);
+                    Log.Info("[gpu] เริ่มนับเกรดใหม่ตั้งแต่ตอนนี้ — งานเก่าไม่ถูกลบ แต่ไม่ถูกนับในการจัดเลนอีก");
+                }
+                catch (Exception ex)
+                {
+                    Log.Warn($"[gpu] รีเซ็ตการนับเกรดไม่สำเร็จ: {ex.Message}");
+                }
+            }
+
             Log.Info("[gpu] กำลังประเมินเครื่อง — วัดความเร็วการ์ดจอด้วยงานมาตรฐาน");
 
             // Straight into the shared state: the window already redraws on
@@ -550,7 +681,7 @@ public sealed class NodeHost : IAsyncDisposable
             LicenseState license = await _studio.ValidateAsync(Options.LicenseKey, ct);
             State.SetLicense(license);
             Log.Info(license.Valid
-                ? $"[cfg] licence active — {license.Plan ?? "pro"}{(license.ExpiresAt is { } e ? $", ถึง {e:yyyy-MM-dd}" : "")}"
+                ? $"[cfg] licence active — {license.Plan ?? "pro"}{(license.ExpiresAt is { } e ? $", ถึง {e.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture)}" : "")}"
                 : $"[cfg] free tier ({license.Message ?? license.Status})");
 
             // Round-trip to the relay as a plain HTTP probe: the honest latency

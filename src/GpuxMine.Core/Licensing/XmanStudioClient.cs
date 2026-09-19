@@ -54,9 +54,26 @@ public sealed record VersionInfo(
 /// Every call fails soft. Losing contact with the website must never stop a
 /// node rendering work it has already been given.
 /// </remarks>
-public sealed class XmanStudioClient(HttpClient http, string baseUrl, string productSlug = "gpuxmine")
+public sealed class XmanStudioClient(HttpClient http, string baseUrl, string productSlug = "gpuxmine", Action<string>? log = null)
 {
     private readonly string _base = baseUrl.TrimEnd('/');
+
+    /// <summary>
+    /// Says out loud that the website refused, and with what.
+    /// </summary>
+    /// <remarks>
+    /// Every call here fails soft, which is right — the fleet must keep
+    /// rendering through a website outage. What was wrong is that it also failed
+    /// silently: a refusal and an outage and a machine with no token all came
+    /// out as the same nothing, and the owner got a blank referrals screen with
+    /// no way to tell which. Soft is not the same as quiet.
+    /// </remarks>
+    private void Refused(string call, HttpResponseMessage response)
+    {
+        if (response.IsSuccessStatusCode) return;
+        log?.Invoke($"[net] XMAN Studio ปฏิเสธ {call} — HTTP {(int)response.StatusCode} {response.ReasonPhrase}"
+            + (response.Headers.TryGetValues("cf-ray", out var ray) ? $" · cf-ray {string.Join(",", ray)}" : ""));
+    }
 
     public async Task<DeviceRegistration> RegisterDeviceAsync(string appVersion, CancellationToken ct = default)
     {
@@ -74,8 +91,11 @@ public sealed class XmanStudioClient(HttpClient http, string baseUrl, string pro
                 },
                 ct);
 
+            Refused("register-device", response);
             var body = await ReadAsync<ApiEnvelope>(response, ct);
-            return new DeviceRegistration(response.IsSuccessStatusCode && (body?.Success ?? false), body?.Message);
+            return new DeviceRegistration(
+                response.IsSuccessStatusCode && (body?.Success ?? false),
+                body?.Message ?? $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}");
         }
         catch (Exception ex)
         {
@@ -110,6 +130,7 @@ public sealed class XmanStudioClient(HttpClient http, string baseUrl, string pro
                 new { worker_id = workerId, token },
                 ct);
 
+            Refused("referral", response);
             var body = await ReadAsync<ReferralEnvelope>(response, ct);
             if (!response.IsSuccessStatusCode || body?.Success != true || body.Data is null) return null;
 
@@ -157,6 +178,7 @@ public sealed class XmanStudioClient(HttpClient http, string baseUrl, string pro
                 },
                 ct);
 
+            Refused("claim", response);
             var body = await ReadAsync<ClaimEnvelope>(response, ct);
 
             if (body is null)
@@ -205,8 +227,9 @@ public sealed class XmanStudioClient(HttpClient http, string baseUrl, string pro
                 },
                 ct);
 
+            Refused("validate", response);
             var body = await ReadAsync<LicenseEnvelope>(response, ct);
-            if (body is null) return LicenseState.Unknown("อ่านคำตอบจากเซิร์ฟเวอร์ไม่ได้");
+            if (body is null) return LicenseState.Unknown($"อ่านคำตอบจากเซิร์ฟเวอร์ไม่ได้ (HTTP {(int)response.StatusCode})");
 
             // The server's verdict is `is_valid` (status active, not expired, and
             // bound to this machine). `data.status` alone would say "active" for
@@ -237,6 +260,7 @@ public sealed class XmanStudioClient(HttpClient http, string baseUrl, string pro
                 },
                 ct);
 
+            Refused("check-update", response);
             var body = await ReadAsync<UpdateEnvelope>(response, ct);
             if (body is null || !body.Success) return null;
 

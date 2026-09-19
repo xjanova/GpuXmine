@@ -30,11 +30,19 @@ public static class NodeConfiguration
 
         string resolved = first.DataDirectory;
         if (string.Equals(resolved, NodeOptions.DefaultDataDirectory(), StringComparison.OrdinalIgnoreCase))
-            return Rescued(first);
+            return Rescued(first, NodeOptions.DefaultDataDirectory(), NodeOptions.LegacyDataDirectory());
 
-        // Pass two: the same sources, plus the identity file that actually
-        // belongs to this node. Command line and environment still win over it.
-        return Rescued(Compose(args, resolved).Get<NodeOptions>() ?? first);
+        // Pass two: this node's own identity file, and only that one.
+        //
+        // The default and legacy folders are dropped here, because a node that
+        // has been given its own directory and has no identity in it is not
+        // registered — it is not the machine's main node under another name.
+        // Leaving them in meant a second node picked up the first one's worker
+        // id and token: measured, not theorised, by starting a node in an empty
+        // test folder and watching it come up as the real worker. Two processes
+        // on one identity is the relay dropping one of them and an owner
+        // wondering which of their machines stopped earning.
+        return Rescued(Compose(args, resolved, onlyThatIdentity: true).Get<NodeOptions>() ?? first, resolved);
     }
 
     /// <summary>
@@ -58,13 +66,14 @@ public static class NodeConfiguration
     /// has no identity in it, the options come back exactly as composed.
     /// </para>
     /// </remarks>
-    private static NodeOptions Rescued(NodeOptions options)
+    private static NodeOptions Rescued(NodeOptions options, params string[] alsoLookIn)
     {
         if (!string.IsNullOrWhiteSpace(options.WorkerId)) return options;
 
-        foreach (string directory in new[] { options.DataDirectory, NodeOptions.DefaultDataDirectory(), NodeOptions.LegacyDataDirectory() })
+        IdentityNotes.Clear();
+        foreach (string directory in new[] { options.DataDirectory }.Concat(alsoLookIn).Distinct(StringComparer.OrdinalIgnoreCase))
         {
-            if (NodeIdentityFile.ReadDirect(NodeIdentityFile.PathIn(directory)) is not { } identity) continue;
+            if (NodeIdentityFile.ReadDirect(NodeIdentityFile.PathIn(directory), IdentityNotes.Add) is not { } identity) continue;
 
             return options with
             {
@@ -78,10 +87,9 @@ public static class NodeConfiguration
         // Nothing found anywhere. Record where it looked, because the next
         // person to see "ยังไม่ได้ลงทะเบียน" on a machine that plainly is
         // registered should be reading a list of paths rather than guessing.
-        LastIdentitySearch = string.Join(" · ", new[]
-        {
-            options.DataDirectory, NodeOptions.DefaultDataDirectory(), NodeOptions.LegacyDataDirectory(),
-        }.Distinct(StringComparer.OrdinalIgnoreCase));
+        LastIdentitySearch = string.Join(" · ", new[] { options.DataDirectory }
+            .Concat(alsoLookIn)
+            .Distinct(StringComparer.OrdinalIgnoreCase));
 
         return options;
     }
@@ -92,16 +100,33 @@ public static class NodeConfiguration
     /// </summary>
     public static string? LastIdentitySearch { get; private set; }
 
-    private static IConfigurationRoot Compose(string[] args, string? extraIdentityDirectory)
+    /// <summary>
+    /// Exactly what happened to each file it tried: missing, locked, malformed,
+    /// or read but empty. Written to the activity log at startup when the node
+    /// comes up unregistered.
+    /// </summary>
+    /// <remarks>
+    /// The one thing this failure never produced was a reason. Both catches on
+    /// the path were silent, so a machine that plainly had an identity came up
+    /// without one and the log said only that it was unregistered — which is
+    /// exactly what it would say for a machine that had never been paired.
+    /// </remarks>
+    public static List<string> IdentityNotes { get; } = [];
+
+    private static IConfigurationRoot Compose(string[] args, string? extraIdentityDirectory, bool onlyThatIdentity = false)
     {
-        var builder = new ConfigurationBuilder()
-            .SetBasePath(AppContext.BaseDirectory)
-            .AddJsonFile(NodeIdentityFile.FileName, optional: true, reloadOnChange: false)
-            // The legacy path first, so the one in the current data folder wins
-            // if both exist. The old one lived inside what became the install
-            // directory, and an installer cleans that.
-            .AddJsonFile(NodeIdentityFile.PathIn(NodeOptions.LegacyDataDirectory()), optional: true, reloadOnChange: false)
-            .AddJsonFile(NodeIdentityFile.PathIn(NodeOptions.DefaultDataDirectory()), optional: true, reloadOnChange: false);
+        var builder = new ConfigurationBuilder().SetBasePath(AppContext.BaseDirectory);
+
+        if (!onlyThatIdentity)
+        {
+            builder
+                .AddJsonFile(NodeIdentityFile.FileName, optional: true, reloadOnChange: false)
+                // The legacy path first, so the one in the current data folder
+                // wins if both exist. The old one lived inside what became the
+                // install directory, and an installer cleans that.
+                .AddJsonFile(NodeIdentityFile.PathIn(NodeOptions.LegacyDataDirectory()), optional: true, reloadOnChange: false)
+                .AddJsonFile(NodeIdentityFile.PathIn(NodeOptions.DefaultDataDirectory()), optional: true, reloadOnChange: false);
+        }
 
         if (extraIdentityDirectory is not null)
             builder.AddJsonFile(NodeIdentityFile.PathIn(extraIdentityDirectory), optional: true, reloadOnChange: false);

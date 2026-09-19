@@ -52,30 +52,62 @@ public static class NodeIdentityFile
     /// none, nothing changes and the node is correctly unregistered.
     /// </para>
     /// </remarks>
-    public static (string WorkerId, string Token, string? RelayUrl)? ReadDirect(string path)
+    public static (string WorkerId, string Token, string? RelayUrl)? ReadDirect(
+        string path, Action<string>? note = null)
     {
-        try
+        // Read again before giving up.
+        //
+        // One read was a coin toss. This machine came up unregistered five
+        // times on 2026-09-19 with the file present, complete and unchanged,
+        // and came up correctly from the same binary minutes later — so
+        // whatever the file was busy with, it was busy with it briefly.
+        // Something holding a small file in %AppData% for a moment is ordinary
+        // on Windows: a scanner, a backup client, a sync agent, an installer
+        // hook that has just finished writing next to it. Three tries over
+        // roughly a third of a second costs a startup nothing and turns a
+        // transient into a non-event.
+        for (int attempt = 1; attempt <= 3; attempt++)
         {
-            if (!File.Exists(path)) return null;
+            try
+            {
+                if (!File.Exists(path))
+                {
+                    note?.Invoke($"ไม่มีไฟล์ {path}");
+                    return null;
+                }
 
-            Dictionary<string, JsonElement> values = Read(path);
+                Dictionary<string, JsonElement> values = ReadOrThrow(path);
 
-            string? Find(string key) => values
-                .FirstOrDefault(kv => kv.Key.Equals(key, StringComparison.OrdinalIgnoreCase))
-                .Value is { ValueKind: JsonValueKind.String } element ? element.GetString() : null;
+                string? Find(string key) => values
+                    .FirstOrDefault(kv => kv.Key.Equals(key, StringComparison.OrdinalIgnoreCase))
+                    .Value is { ValueKind: JsonValueKind.String } element ? element.GetString() : null;
 
-            string? worker = Find("WorkerId");
-            string? token = Find("Token");
-            if (string.IsNullOrWhiteSpace(worker) || string.IsNullOrWhiteSpace(token)) return null;
+                string? worker = Find("WorkerId");
+                string? token = Find("Token");
+                if (string.IsNullOrWhiteSpace(worker) || string.IsNullOrWhiteSpace(token))
+                {
+                    // Readable and genuinely without an identity. Not a fault,
+                    // and not worth retrying.
+                    note?.Invoke($"{path} อ่านได้แต่ไม่มี WorkerId/Token");
+                    return null;
+                }
 
-            return (worker, token, Find("RelayUrl"));
+                if (attempt > 1) note?.Invoke($"อ่าน {path} สำเร็จในครั้งที่ {attempt}");
+                return (worker, token, Find("RelayUrl"));
+            }
+            catch (Exception ex)
+            {
+                // Said out loud, every time. The silent version of this catch is
+                // the reason a node coming up unregistered went a full day
+                // without anybody being able to name the cause.
+                note?.Invoke($"อ่าน {path} ไม่สำเร็จ (ครั้งที่ {attempt}): {ex.GetType().Name} {ex.Message}");
+                if (attempt < 3) Thread.Sleep(120);
+            }
         }
-        catch
-        {
-            // A rescue that throws is worse than no rescue: the node would stop
-            // starting at all, which is the thing this exists to prevent.
-            return null;
-        }
+
+        // A rescue that throws is worse than no rescue: the node would stop
+        // starting at all, which is the thing this exists to prevent.
+        return null;
     }
 
     /// <summary>
@@ -146,12 +178,15 @@ public static class NodeIdentityFile
         File.Move(temporary, path, overwrite: true);
     }
 
+    private static Dictionary<string, JsonElement> ReadOrThrow(string path) =>
+        JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(File.ReadAllText(path)) ?? [];
+
     private static Dictionary<string, JsonElement> Read(string path)
     {
         try
         {
             if (!File.Exists(path)) return [];
-            return JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(File.ReadAllText(path)) ?? [];
+            return ReadOrThrow(path);
         }
         catch
         {

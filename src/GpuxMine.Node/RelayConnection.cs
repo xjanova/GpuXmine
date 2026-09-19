@@ -60,6 +60,7 @@ public sealed class RelayConnection(
         socket.Options.SetRequestHeader("Authorization", $"Bearer {options.Token}");
         socket.Options.SetRequestHeader("X-Worker-Id", options.WorkerId);
         socket.Options.SetRequestHeader("X-Agent-Version", AgentVersion);
+        socket.Options.SetRequestHeader("User-Agent", Core.Net.NodeHttp.UserAgent);
         socket.Options.KeepAliveInterval = TimeSpan.FromSeconds(20);
 
         await socket.ConnectAsync(new Uri(options.RelayUrl), ct);

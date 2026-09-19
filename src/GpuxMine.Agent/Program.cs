@@ -1,3 +1,4 @@
+using GpuxMine.Core.Net;
 using GpuxMine.Core;
 using GpuxMine.Core.Licensing;
 using GpuxMine.Core.Updates;
@@ -73,7 +74,7 @@ if (args.FirstOrDefault(a => a.Equals("--pair", StringComparison.OrdinalIgnoreCa
 
     Console.WriteLine($"กำลังลงทะเบียนเครื่องกับ {options.XmanStudioUrl}");
 
-    using var pairingHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+    using var pairingHttp = NodeHttp.Create(TimeSpan.FromSeconds(30));
     var studio = new XmanStudioClient(pairingHttp, options.XmanStudioUrl);
     NodeCredentials credentials = await studio.ClaimAsync(code, SelfUpdater.CurrentVersion);
 

@@ -1,3 +1,4 @@
+using GpuxMine.Core.Net;
 using System.IO;
 using System.Net.Http;
 using System.Windows;
@@ -56,7 +57,7 @@ public partial class App : Application
     {
         try
         {
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(1) };
+            using var http = NodeHttp.Create(TimeSpan.FromSeconds(1));
             using var response = http.GetAsync(comfyUrl.TrimEnd('/') + "/system_stats").GetAwaiter().GetResult();
             return response.IsSuccessStatusCode
                 ? $"พร้อม · {comfyUrl}"
@@ -172,15 +173,30 @@ public partial class App : Application
         // against. Now the identity is read out at startup, on screen and in
         // the log, every single launch.
         splash?.Step("ตรวจการลงทะเบียนเครื่อง");
-        bool paired = !string.IsNullOrWhiteSpace(options.WorkerId);
+
+        // Read from the host, not from `options`: the host reconciles the
+        // identity against the ledger as it opens, so a machine whose file was
+        // unreadable this once is already paired again by the time we get here
+        // and must not be announced as a stranger.
+        NodeOptions resolved = _host.Options;
+        bool paired = !string.IsNullOrWhiteSpace(resolved.WorkerId);
         string identity = paired
-            ? $"{options.WorkerId} · relay {options.RelayUrl}"
+            ? $"{resolved.WorkerId} · relay {resolved.RelayUrl}"
             : "ยังไม่ได้ลงทะเบียน — กรอกรหัสจับคู่ในหน้า Settings";
         if (!paired && NodeConfiguration.LastIdentitySearch is { } looked)
             _host.Log.Warn($"[warn] หาไฟล์ตัวตนไม่เจอในโฟลเดอร์เหล่านี้: {looked}");
+
+        // Every reason it gave, not just the verdict. This is the line that was
+        // missing while the machine came up unregistered five times in a day.
+        if (!paired)
+        {
+            foreach (string note in NodeConfiguration.IdentityNotes)
+                _host.Log.Warn($"[warn] {note}");
+        }
+
         _host.Log.Info($"[cfg] ตัวตนเครื่องตอนเปิด: {identity}");
-        if (options.IdentityRescuedFrom is { } rescued)
-            _host.Log.Warn($"[warn] ตั้งค่าอ่านตัวตนไม่เจอ ต้องอ่านจากไฟล์ตรง ๆ: {rescued} — เกิดอาการที่ยังหาสาเหตุไม่ได้ซ้ำอีกครั้ง");
+        if (resolved.IdentityRescuedFrom is { } rescued)
+            _host.Log.Warn($"[warn] ตั้งค่าปกติอ่านตัวตนไม่เจอ — กู้มาจาก {rescued}");
         splash?.Done(identity);
 
         splash?.Step("เตรียมหน้าจอ");

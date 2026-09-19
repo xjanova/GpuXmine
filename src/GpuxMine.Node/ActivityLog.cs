@@ -69,7 +69,7 @@ public sealed class ActivityLog(NodeStore store, ILoggerish? also = null) : ILog
 
     public string Export(int limit = 20_000)
         => string.Join('\n', store.RecentLog(limit).Select(e =>
-            $"{e.At:yyyy-MM-dd HH:mm:ss} [{e.Channel}] {(e.Level == LogLevel.Warn ? "WARN " : "")}{e.Message}"));
+            $"{e.At.ToString("yyyy-MM-dd HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture)} [{e.Channel}] {(e.Level == LogLevel.Warn ? "WARN " : "")}{e.Message}"));
 
     private static (string Channel, string Text) Split(string message)
     {

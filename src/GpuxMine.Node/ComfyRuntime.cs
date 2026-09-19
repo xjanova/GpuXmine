@@ -103,7 +103,7 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
         _options = options;
         _log = log;
         _acceptGate = acceptGate ?? (() => AcceptDecision.Yes);
-        _http = new HttpClient { Timeout = TimeSpan.FromSeconds(150) };
+        _http = Core.Net.NodeHttp.Create(TimeSpan.FromSeconds(150));
     }
 
     public bool Listening => _listening;
