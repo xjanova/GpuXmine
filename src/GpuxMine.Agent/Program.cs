@@ -23,6 +23,17 @@ catch (IOException)
 
 var options = NodeConfiguration.Build(args);
 
+// The same lock the window takes. Running the agent and the window against one
+// data directory is the pairing that corrupted the ledger on the development
+// machine, and neither of them could tell it was happening.
+using var instance = NodeInstanceLock.TryAcquire(options.DataDirectory);
+if (instance is null)
+{
+    Console.Error.WriteLine($"มีโหนดตัวอื่นใช้โฟลเดอร์นี้อยู่แล้ว: {options.DataDirectory}");
+    Console.Error.WriteLine("ปิดตัวนั้นก่อน หรือใช้ --DataDirectory ชี้ไปโฟลเดอร์อื่นถ้าตั้งใจรันสองเครื่อง");
+    return 1;
+}
+
 // `--identity`: print what XMAN Studio will see as this machine and exit. The
 // first thing support asks for when a device looks duplicated or missing.
 if (args.Any(a => a.Equals("--identity", StringComparison.OrdinalIgnoreCase)))

@@ -862,7 +862,11 @@ public sealed class MainViewModel : ObservableObject
     public RelayCommand CopyText { get; }
     public string StudioUrl => _host.Options.XmanStudioUrl.TrimEnd('/');
     public string KycUrl => StudioUrl + "/kyc";
-    public string WalletUrl => StudioUrl + "/customer/wallet";
+    // /wallet, not /customer/wallet. The owner pressed the one button in this
+    // program that shows them their money and got a 404 — the path was written
+    // from memory rather than from the site's route table, and nothing here
+    // checks a link before opening it in a browser.
+    public string WalletUrl => StudioUrl + "/wallet";
     public string ReferralUrl => "https://ai.xman4289.com/referral";
 
     private static void OpenInBrowser(string url)

@@ -14,6 +14,41 @@ public partial class App : Application
     private NodeHost? _host;
     private MainViewModel? _vm;
     private TrayIcon? _tray;
+    private NodeInstanceLock? _instanceLock;
+
+    /// <summary>Raises the window of the copy that is already running.</summary>
+    /// <remarks>
+    /// Best effort by design. Failing to front someone else's window is not a
+    /// reason to start a second node, so every failure here still ends in this
+    /// copy exiting quietly.
+    /// </remarks>
+    private static void ShowExistingInstance()
+    {
+        try
+        {
+            var me = System.Diagnostics.Process.GetCurrentProcess();
+            foreach (var other in System.Diagnostics.Process.GetProcessesByName(me.ProcessName))
+            {
+                if (other.Id == me.Id) continue;
+                if (other.MainWindowHandle == IntPtr.Zero) continue;
+                ShowWindow(other.MainWindowHandle, SW_RESTORE);
+                SetForegroundWindow(other.MainWindowHandle);
+                return;
+            }
+        }
+        catch
+        {
+            // Nothing to do about it, and nothing worth failing a startup over.
+        }
+    }
+
+    private const int SW_RESTORE = 9;
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -44,6 +79,34 @@ public partial class App : Application
         base.OnStartup(e);
 
         var options = NodeConfiguration.Build(e.Args);
+
+        // One node, one process.
+        //
+        // Nothing stopped a second copy starting, and two copies share
+        // everything that matters: the same identity file, the same relay
+        // credentials, and the same SQLite ledger. This machine lost that
+        // ledger three times in one day to exactly that — two processes with
+        // the file open, one of them killed, the WAL left inconsistent. It also
+        // made "open the program" a coin toss: whichever window came up was
+        // whichever copy the shell happened to activate, and an older one shows
+        // older state.
+        //
+        // The lock is per data directory rather than per machine. Two nodes
+        // deliberately run side by side with --DataDirectory, and they have
+        // separate ledgers and separate identities; it is sharing one directory
+        // that is never intentional. Local\ scope, because the ledger belongs
+        // to the signed-in user.
+        _instanceLock = NodeInstanceLock.TryAcquire(options.DataDirectory);
+        if (_instanceLock is null)
+        {
+            // Bring the window that is already running forward rather than
+            // saying nothing: the owner clicked the icon because they wanted to
+            // see the program, and a click that appears to do nothing is how
+            // people end up starting a third copy.
+            ShowExistingInstance();
+            Shutdown();
+            return;
+        }
 
         // Our working directory out of the install tree, so an update can
         // rename it later.
@@ -122,6 +185,10 @@ public partial class App : Application
                 host.Log.Warn($"[warn] shutdown: {ex.InnerException?.Message ?? ex.Message}");
             }
         }
+        // Released last, so the name stays taken for as long as this process
+        // could still be holding the ledger.
+        _instanceLock?.Dispose();
+
         base.OnExit(e);
     }
 }
