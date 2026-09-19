@@ -1,0 +1,118 @@
+<UserControl x:Class="GpuxMine.App.Views.HistoryView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Grid>
+        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="13"/><RowDefinition Height="Auto"/><RowDefinition Height="10"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+
+        <!-- ยอดรวมมาจากฐานข้อมูลในช่วงเดียวกับที่แสดง ไม่ใช่บวกจากแถวบนจอ
+             เพราะรายการถูกจำกัดไว้ 500 แถว แต่ยอดรวมต้องไม่ถูกจำกัด -->
+        <Border Grid.Row="0" Style="{StaticResource LcdPanelStyle}" Padding="16,10">
+            <Grid>
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0">
+                    <TextBlock Text="งานที่ทำเสร็จ" Style="{StaticResource LcdLabelText}"/>
+                    <TextBlock Style="{StaticResource LcdValueBlue}" FontSize="20">
+                        <Run Text="{Binding HistoryOkText, Mode=OneWay}"/><Run Text=" สำเร็จ · " FontSize="11"/><Run Text="{Binding HistoryFailedText, Mode=OneWay}"/><Run Text=" ล้ม" FontSize="11"/>
+                    </TextBlock>
+                </StackPanel>
+                <StackPanel Grid.Column="1">
+                    <TextBlock Text="รวมทั้งหมด" Style="{StaticResource LcdLabelText}"/>
+                    <TextBlock Text="{Binding HistoryJobsText}" Style="{StaticResource LcdValue}" FontSize="20"/>
+                </StackPanel>
+                <StackPanel Grid.Column="2">
+                    <TextBlock Text="เวลาที่การ์ดทำงาน" Style="{StaticResource LcdLabelText}"/>
+                    <TextBlock Text="{Binding HistoryBusyText}" Style="{StaticResource LcdValue}" FontSize="20"/>
+                </StackPanel>
+                <StackPanel Grid.Column="3">
+                    <TextBlock Text="ได้รับรวม" Style="{StaticResource LcdLabelText}"/>
+                    <TextBlock Text="{Binding HistoryPayoutText}" Style="{StaticResource LcdValueGreen}" FontSize="20"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <Border Grid.Row="2" Style="{StaticResource ChromePanelStyle}" Padding="14,10">
+            <Grid>
+                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="ช่วงที่ดู" Style="{StaticResource Body}" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                    <Button Style="{StaticResource ChromeButton}" Content="7 วัน"   Command="{Binding SetHistoryWindow}" CommandParameter="7"  Width="62" Margin="0,0,5,0"/>
+                    <Button Style="{StaticResource ChromeButton}" Content="30 วัน"  Command="{Binding SetHistoryWindow}" CommandParameter="30" Width="62" Margin="0,0,5,0"/>
+                    <Button Style="{StaticResource ChromeButton}" Content="90 วัน"  Command="{Binding SetHistoryWindow}" CommandParameter="90" Width="62" Margin="0,0,5,0"/>
+                    <Button Style="{StaticResource ChromeButton}" Content="ทั้งหมด" Command="{Binding SetHistoryWindow}" CommandParameter="0"  Width="70"/>
+                </StackPanel>
+                <TextBlock Grid.Column="1" Text="{Binding HistoryRangeText}" Style="{StaticResource Muted}"
+                           VerticalAlignment="Center" Margin="14,0" TextWrapping="Wrap"/>
+                <Button Grid.Column="2" Style="{StaticResource ChromeButton}" Content="รีเฟรช" Command="{Binding RefreshHistory}" Width="80"/>
+            </Grid>
+        </Border>
+
+        <Border Grid.Row="4" Style="{StaticResource ChromePanelStyle}" Padding="0">
+            <DockPanel>
+                <Border DockPanel.Dock="Top" Background="{StaticResource MenuBar}" BorderBrush="{StaticResource ChromeBorderLight}" BorderThickness="0,0,0,1" Height="30" CornerRadius="9,9,0,0" Padding="14,0">
+                    <Grid VerticalAlignment="Center">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="80"/><ColumnDefinition Width="70"/><ColumnDefinition Width="105"/><ColumnDefinition Width="110"/><ColumnDefinition Width="*"/><ColumnDefinition Width="80"/><ColumnDefinition Width="90"/><ColumnDefinition Width="80"/></Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="DATE" Style="{StaticResource SectionLabel}" Margin="0"/>
+                        <TextBlock Grid.Column="1" Text="TIME" Style="{StaticResource SectionLabel}" Margin="0"/>
+                        <TextBlock Grid.Column="2" Text="JOB ID" Style="{StaticResource SectionLabel}" Margin="0"/>
+                        <TextBlock Grid.Column="3" Text="TASK" Style="{StaticResource SectionLabel}" Margin="0"/>
+                        <TextBlock Grid.Column="4" Text="OUTPUT" Style="{StaticResource SectionLabel}" Margin="0"/>
+                        <TextBlock Grid.Column="5" Text="DURATION" Style="{StaticResource SectionLabel}" Margin="0"/>
+                        <TextBlock Grid.Column="6" Text="PAYOUT" Style="{StaticResource SectionLabel}" Margin="0"/>
+                        <TextBlock Grid.Column="7" Text="STATUS" Style="{StaticResource SectionLabel}" Margin="0"/>
+                    </Grid>
+                </Border>
+
+                <!-- บอกตรง ๆ ว่าทำไมว่าง ดีกว่าปล่อยให้เดาว่าประวัติหาย -->
+                <Border DockPanel.Dock="Bottom" Padding="16,22" Visibility="{Binding HistoryIsEmpty, Converter={StaticResource Vis}}">
+                    <StackPanel HorizontalAlignment="Center">
+                        <TextBlock Text="ยังไม่มีงานที่ทำเสร็จในช่วงนี้" Style="{StaticResource Body}" HorizontalAlignment="Center"/>
+                        <TextBlock Text="งานที่เครื่องนี้รับและทำเสร็จจะถูกบันทึกไว้ที่นี่เอง ไม่หายเมื่อปิดโปรแกรม" Style="{StaticResource Muted}" HorizontalAlignment="Center" Margin="0,4,0,0"/>
+                    </StackPanel>
+                </Border>
+
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <ItemsControl ItemsSource="{Binding HistoryRows}" AlternationCount="2">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border Padding="14,0" Height="34">
+                                    <Border.Style>
+                                        <Style TargetType="Border">
+                                            <Setter Property="Background" Value="#fbfcfd"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding (ItemsControl.AlternationIndex), RelativeSource={RelativeSource AncestorType=ContentPresenter}}" Value="1">
+                                                    <Setter Property="Background" Value="#f2f5f8"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Border.Style>
+                                    <Grid VerticalAlignment="Center">
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="80"/><ColumnDefinition Width="70"/><ColumnDefinition Width="105"/><ColumnDefinition Width="110"/><ColumnDefinition Width="*"/><ColumnDefinition Width="80"/><ColumnDefinition Width="90"/><ColumnDefinition Width="80"/></Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="{Binding Day}" Style="{StaticResource Mono}" FontSize="11" VerticalAlignment="Center"/>
+                                        <TextBlock Grid.Column="1" Text="{Binding When}" Style="{StaticResource Mono}" FontSize="11" VerticalAlignment="Center"/>
+                                        <TextBlock Grid.Column="2" Text="{Binding Id}" Style="{StaticResource Mono}" FontSize="11" VerticalAlignment="Center"/>
+                                        <TextBlock Grid.Column="3" Text="{Binding Task}" Style="{StaticResource Body}" VerticalAlignment="Center"/>
+                                        <TextBlock Grid.Column="4" Text="{Binding Output}" Style="{StaticResource Muted}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                                        <TextBlock Grid.Column="5" Text="{Binding Duration}" Style="{StaticResource Mono}" FontSize="11" VerticalAlignment="Center"/>
+                                        <TextBlock Grid.Column="6" Text="{Binding Payout}" Style="{StaticResource Mono}" FontSize="11" VerticalAlignment="Center"/>
+                                        <TextBlock Grid.Column="7" Text="{Binding Status}" FontSize="10.5" VerticalAlignment="Center">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock" BasedOn="{StaticResource Mono}">
+                                                    <Setter Property="Foreground" Value="{StaticResource GreenDark}"/>
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsFailed}" Value="True">
+                                                            <Setter Property="Foreground" Value="{StaticResource RedDark}"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+            </DockPanel>
+        </Border>
+    </Grid>
+</UserControl>

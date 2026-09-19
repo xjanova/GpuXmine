@@ -23,6 +23,7 @@ public partial class MainWindow : Window
             ["power"] = new PowerView(),
             ["models"] = new ModelsView(),
             ["queue"] = new QueueView(),
+            ["history"] = new HistoryView(),
             ["wallet"] = new WalletView(),
             ["benchmark"] = new BenchmarkView(),
             ["log"] = new LogView(),

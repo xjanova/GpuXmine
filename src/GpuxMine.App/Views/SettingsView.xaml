@@ -146,6 +146,27 @@
                         </StackPanel>
                     </Border>
 
+                    <!-- ประวัติงานเป็นบันทึกของเจ้าของเครื่อง อยู่บนดิสก์ของเขา
+                         จะเก็บนานแค่ไหนจึงเป็นสิทธิ์ของเขา ไม่ใช่ค่าคงที่ในโค้ด -->
+                    <Border Style="{StaticResource LcdPanelStyle}" Margin="0,10,0,0" Padding="12,10">
+                        <StackPanel>
+                            <TextBlock Text="ประวัติงานที่เก็บไว้" Style="{StaticResource SectionLabel}" Margin="0,0,0,6"/>
+                            <TextBlock Text="{Binding RetentionText}" Style="{StaticResource LcdLabelText}" TextWrapping="Wrap" Margin="0,0,0,8"/>
+                            <WrapPanel>
+                                <Button Style="{StaticResource ChromeButton}" Content="7 วัน"    Command="{Binding SetRetention}" CommandParameter="7"   Width="64" Margin="0,0,5,5"/>
+                                <Button Style="{StaticResource ChromeButton}" Content="30 วัน"   Command="{Binding SetRetention}" CommandParameter="30"  Width="64" Margin="0,0,5,5"/>
+                                <Button Style="{StaticResource ChromeButton}" Content="90 วัน"   Command="{Binding SetRetention}" CommandParameter="90"  Width="64" Margin="0,0,5,5"/>
+                                <Button Style="{StaticResource ChromeButton}" Content="120 วัน"  Command="{Binding SetRetention}" CommandParameter="120" Width="64" Margin="0,0,5,5"/>
+                                <Button Style="{StaticResource ChromeButton}" Content="ไม่ล้าง"  Command="{Binding SetRetention}" CommandParameter="0"   Width="70" Margin="0,0,0,5"/>
+                            </WrapPanel>
+                            <TextBlock Text="การล้างทำงานเองทุกวัน ลบเฉพาะงานที่ทำเสร็จแล้วและเก่ากว่ากำหนด งานที่ยังค้างจ่ายจะไม่ถูกลบ"
+                                       Style="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,2,0,0"/>
+                            <Button Style="{StaticResource ChromeButton}" Content="ล้างตอนนี้เลย" Margin="0,8,0,0" Command="{Binding PurgeNow}"/>
+                            <TextBlock Text="{Binding PurgeStatus}" Style="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,6,0,0"
+                                       Visibility="{Binding PurgeStatus, Converter={StaticResource NullVis}}"/>
+                        </StackPanel>
+                    </Border>
+
                     <Button Style="{StaticResource ChromeButton}" Content="Run diagnostics" Command="{Binding RunDiagnostics}" Margin="0,10,0,0"/>
                     <Border Style="{StaticResource LcdPanelStyle}" Margin="0,10,0,0" Padding="10,8" Visibility="{Binding DiagnosticsText, Converter={StaticResource NullVis}}">
                         <TextBlock Text="{Binding DiagnosticsText}" FontFamily="{StaticResource MonoFont}" FontSize="10.5" Foreground="{StaticResource LcdBlue}" TextWrapping="Wrap"/>

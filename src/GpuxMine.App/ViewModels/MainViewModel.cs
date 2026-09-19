@@ -67,7 +67,13 @@ public sealed class MainViewModel : ObservableObject
             Raise(nameof(VisibleLog));
         });
 
-        host.Jobs.Changed += _ => _ui.BeginInvoke(RefreshJobs);
+        host.Jobs.Changed += j => _ui.BeginInvoke(() =>
+        {
+            RefreshJobs();
+            // Only when a job actually finished: redrawing the history on every
+            // progress tick would re-query the database several times a second.
+            if (j.CompletedAt is not null) LoadHistory();
+        });
         RefreshJobs();
 
         ToggleSharing = RelayCommand.Of(() => _ = ToggleSharingAsync());
@@ -76,6 +82,10 @@ public sealed class MainViewModel : ObservableObject
         RunDiagnostics = RelayCommand.Of(() => _ = RunDiagnosticsAsync());
         RunBenchmark = RelayCommand.Of(() => _ = RunBenchmarkAsync());
         PairNode = RelayCommand.Of(() => _ = PairNodeAsync());
+        SetHistoryWindow = new RelayCommand(p => HistoryWindowDays = int.Parse((string)p!));
+        RefreshHistory = RelayCommand.Of(LoadHistory);
+        SetRetention = new RelayCommand(p => RetentionDays = int.Parse((string)p!));
+        PurgeNow = RelayCommand.Of(PurgeHistoryNow);
         ChangePairing = RelayCommand.Of(BeginRepair);
         CancelPairingChange = RelayCommand.Of(EndRepair);
         OpenUrl = new RelayCommand(p => OpenInBrowser((string)p!));
@@ -85,6 +95,8 @@ public sealed class MainViewModel : ObservableObject
         // Pull, not push: the node's state changes many times a second while
         // rendering, and re-reading it at the prototype's 1.4 s cadence keeps
         // the UI live without flooding the dispatcher.
+        LoadHistory();
+
         _tick = new DispatcherTimer(NodeHost.SensePeriod, DispatcherPriority.Background, (_, _) => Pull(), ui);
         _tick.Start();
         Pull();
@@ -429,12 +441,158 @@ public sealed class MainViewModel : ObservableObject
         public string Model => $"{j.NodesTotal} nodes";
         public string Status => j.Status switch { JobStatus.Running => "RUNNING", JobStatus.Completed => "DONE", JobStatus.Failed => "FAILED", _ => "queued" };
         public string When => j.CompletedAt?.ToString("HH:mm:ss") ?? j.StartedAt?.ToString("HH:mm:ss") ?? j.SubmittedAt.ToString("HH:mm:ss");
+
+        /// <summary>The date, for the history screen. The live queue is all today and does not show it.</summary>
+        /// <remarks>
+        /// Gregorian, and spelled out to four digits. On a Thai machine the
+        /// default calendar renders 2026 as 2569, and the same job then reads
+        /// as 03/03/69 here and 03/03/26 on the website that pays for it —
+        /// two dates for one piece of work, on the screen an owner uses to
+        /// check they were paid.
+        /// </remarks>
+        public string Day => (j.CompletedAt ?? j.StartedAt ?? j.SubmittedAt)
+            .ToString("dd/MM/yyyy", System.Globalization.CultureInfo.InvariantCulture);
         public string Duration => j.Duration is { } d ? $"{d.TotalSeconds:0.0}s" : "";
         public string Payout => j.PayoutThb is { } p ? $"+฿{p:N2}" : "—";
         public bool IsRunning => j.Status == JobStatus.Running;
         public bool IsFailed => j.Status == JobStatus.Failed;
         public string? Error => j.Error;
         public string Output => j.OutputFilename ?? "";
+    }
+
+    // ------------------------------------------------------------ history
+
+    /// <summary>
+    /// What this machine has actually done, read from disk rather than from
+    /// the live queue.
+    /// </summary>
+    /// <remarks>
+    /// The Live Queue screen shows this session and empties on restart. An
+    /// owner who has been sharing for a month had nowhere to see the month.
+    /// </remarks>
+    public ObservableCollection<JobRow> HistoryRows { get; } = [];
+
+    private int _historyWindowDays = 30;
+
+    /// <summary>Days of history to show; 0 shows everything still on disk.</summary>
+    public int HistoryWindowDays
+    {
+        get => _historyWindowDays;
+        set { if (Set(ref _historyWindowDays, value)) LoadHistory(); }
+    }
+
+    public RelayCommand SetHistoryWindow { get; }
+    public RelayCommand RefreshHistory { get; }
+
+    private JobTotals _historyTotals = new();
+
+    public string HistoryJobsText => _historyTotals.Jobs.ToString("N0");
+    public string HistoryOkText => _historyTotals.Completed.ToString("N0");
+    public string HistoryFailedText => _historyTotals.Failed.ToString("N0");
+
+    /// <summary>Null payouts are "—", never ฿0.00 — the pool has not settled them yet.</summary>
+    public string HistoryPayoutText =>
+        _historyTotals.PayoutSatang > 0 ? $"฿{_historyTotals.PayoutThb:N2}" : "—";
+
+    public string HistoryBusyText
+    {
+        get
+        {
+            TimeSpan b = _historyTotals.BusyTime;
+            if (b.TotalSeconds < 1) return "—";
+            return b.TotalHours >= 1 ? $"{b.TotalHours:0.0} ชม." : $"{b.TotalMinutes:0} นาที";
+        }
+    }
+
+    /// <summary>What the window actually covers, so "ทั้งหมด" is not an empty claim.</summary>
+    public string HistoryRangeText
+    {
+        get
+        {
+            if (_historyTotals.Jobs == 0) return "ยังไม่มีงานที่ทำเสร็จในช่วงนี้";
+            string window = HistoryWindowDays == 0 ? "ทั้งหมดที่เก็บไว้" : $"{HistoryWindowDays} วันล่าสุด";
+            var oldest = _host.Store.OldestFinishedJob();
+            return oldest is { } o
+                ? $"{window} · งานเก่าสุดที่ยังเก็บอยู่ {o.ToLocalTime().ToString("d MMM yyyy", System.Globalization.CultureInfo.InvariantCulture)}"
+                : window;
+        }
+    }
+
+    public bool HistoryIsEmpty => HistoryRows.Count == 0;
+
+    private void LoadHistory()
+    {
+        try
+        {
+            HistoryRows.Clear();
+            foreach (var j in _host.Store.FinishedJobs(HistoryWindowDays, limit: 500))
+                HistoryRows.Add(new JobRow(j));
+
+            _historyTotals = _host.Store.TotalsSince(HistoryWindowDays);
+        }
+        catch (Exception ex)
+        {
+            // A history that cannot be read is not a reason to take the screen
+            // down; the node is still earning behind it.
+            _host.Log.Warn($"[warn] อ่านประวัติงานไม่ได้: {ex.Message}");
+            _historyTotals = new JobTotals();
+        }
+
+        Raise(nameof(HistoryJobsText)); Raise(nameof(HistoryOkText)); Raise(nameof(HistoryFailedText));
+        Raise(nameof(HistoryPayoutText)); Raise(nameof(HistoryBusyText)); Raise(nameof(HistoryRangeText));
+        Raise(nameof(HistoryIsEmpty));
+    }
+
+    // ------------------------------------------------- history housekeeping
+
+    /// <summary>
+    /// How long this machine keeps its own record; 0 keeps all of it.
+    /// </summary>
+    /// <remarks>
+    /// Separate from <see cref="HistoryWindowDays"/> on purpose. That one is
+    /// how much the owner is looking at; this one is how much still exists.
+    /// Changing what you are looking at must never delete anything.
+    /// </remarks>
+    public int RetentionDays
+    {
+        get => _host.Settings.HistoryRetentionDays;
+        set
+        {
+            if (_host.Settings.HistoryRetentionDays == value) return;
+            _host.Settings.HistoryRetentionDays = value;
+            _host.Store.RetentionDays = value;
+            SaveSoon();
+            Raise(nameof(RetentionDays)); Raise(nameof(RetentionText));
+        }
+    }
+
+    public RelayCommand SetRetention { get; }
+
+    public string RetentionText => RetentionDays <= 0
+        ? "เก็บไว้ทั้งหมด ไม่ล้างอัตโนมัติ"
+        : $"ล้างงานที่เก่ากว่า {RetentionDays} วันโดยอัตโนมัติ ทุกวัน";
+
+    public string? PurgeStatus { get; private set; }
+    public RelayCommand PurgeNow { get; }
+
+    private void PurgeHistoryNow()
+    {
+        try
+        {
+            int removed = _host.Store.Sweep();
+            PurgeStatus = RetentionDays <= 0
+                ? "ตั้งค่าเป็นเก็บทั้งหมด จึงไม่มีอะไรถูกลบ — บีบไฟล์ให้แล้ว"
+                : removed == 0
+                    ? "ไม่มีงานที่เก่าเกินกำหนด"
+                    : $"ลบงานเก่าไปแล้ว {removed:N0} รายการ";
+            _host.Log.Info($"[cfg] ล้างประวัติงานตามคำสั่ง — ลบ {removed} รายการ, ไฟล์เหลือ {_host.Store.SizeBytes() / 1024.0 / 1024.0:0.0} MB");
+            LoadHistory();
+        }
+        catch (Exception ex)
+        {
+            PurgeStatus = $"ล้างไม่สำเร็จ: {ex.Message}";
+        }
+        Raise(nameof(PurgeStatus));
     }
 
     // ------------------------------------------------------------ log

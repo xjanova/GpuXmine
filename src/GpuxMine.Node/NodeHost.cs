@@ -89,6 +89,9 @@ public sealed class NodeHost : IAsyncDisposable
         Store = new Storage.NodeStore(Path.Combine(options.DataDirectory, "node.db"));
         NodeSettings.MigrateLegacyFile(options.DataDirectory, Store);
         Settings = NodeSettings.Load(Store);
+        // The sweep is the owner's setting, not a constant compiled into the
+        // build. Applied here and again whenever they change it.
+        Store.RetentionDays = Settings.HistoryRetentionDays;
         Log = new ActivityLog(Store, alsoLogTo);
 
         // Said as the first thing in the log, because the owner is about to

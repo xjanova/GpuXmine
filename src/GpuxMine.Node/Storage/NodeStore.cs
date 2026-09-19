@@ -29,8 +29,23 @@ namespace GpuxMine.Node.Storage;
 /// </remarks>
 public sealed class NodeStore : IDisposable
 {
-    /// <summary>Everything older than this is swept nightly — long enough for any dispute, short enough to stay small.</summary>
-    public static readonly TimeSpan Retention = TimeSpan.FromDays(120);
+    /// <summary>The window used when the owner has not chosen one.</summary>
+    /// <remarks>
+    /// Long enough for any dispute over a payout, short enough that the file
+    /// stays small on a machine nobody is looking after.
+    /// </remarks>
+    public const int DefaultRetentionDays = 120;
+
+    /// <summary>
+    /// How many days of finished work to keep, or 0 to keep all of it.
+    /// </summary>
+    /// <remarks>
+    /// This used to be a constant, which meant an owner who wanted a month of
+    /// history and a small file had no way to ask for one, and an owner who
+    /// wanted to keep everything had no way to stop the sweep taking it. It is
+    /// their machine and their record of their own work.
+    /// </remarks>
+    public int RetentionDays { get; set; } = DefaultRetentionDays;
 
     private string _connectionString;
     private readonly SqliteConnection _keepAlive;
@@ -413,6 +428,31 @@ public sealed class NodeStore : IDisposable
         return ids;
     }
 
+    /// <summary>The one place the jobs columns are turned into a record.</summary>
+    /// <remarks>
+    /// Two queries select the same ten columns in the same order, and a
+    /// hand-copied second reader is how the two drift apart by one index.
+    /// </remarks>
+    private static JobRecord ReadJob(Microsoft.Data.Sqlite.SqliteDataReader reader) => new()
+    {
+        PromptId = reader.GetString(0),
+        Kind = reader.GetString(1),
+        Status = reader.GetString(2) switch
+        {
+            "running" => JobStatus.Running,
+            "completed" => JobStatus.Completed,
+            "failed" => JobStatus.Failed,
+            _ => JobStatus.Queued,
+        },
+        NodesTotal = reader.GetInt32(3),
+        SubmittedAt = FromUnix(reader.GetInt64(4)),
+        StartedAt = reader.IsDBNull(5) ? null : FromUnix(reader.GetInt64(5)),
+        CompletedAt = reader.IsDBNull(6) ? null : FromUnix(reader.GetInt64(6)),
+        OutputFilename = reader.IsDBNull(7) ? null : reader.GetString(7),
+        Error = reader.IsDBNull(8) ? null : reader.GetString(8),
+        PayoutThb = reader.IsDBNull(9) ? null : reader.GetInt64(9) / 100m,
+    };
+
     public IReadOnlyList<JobRecord> RecentJobs(int limit = 100)
     {
         using var connection = Open();
@@ -425,28 +465,7 @@ public sealed class NodeStore : IDisposable
 
         var rows = new List<JobRecord>();
         using var reader = command.ExecuteReader();
-        while (reader.Read())
-        {
-            rows.Add(new JobRecord
-            {
-                PromptId = reader.GetString(0),
-                Kind = reader.GetString(1),
-                Status = reader.GetString(2) switch
-                {
-                    "running" => JobStatus.Running,
-                    "completed" => JobStatus.Completed,
-                    "failed" => JobStatus.Failed,
-                    _ => JobStatus.Queued,
-                },
-                NodesTotal = reader.GetInt32(3),
-                SubmittedAt = FromUnix(reader.GetInt64(4)),
-                StartedAt = reader.IsDBNull(5) ? null : FromUnix(reader.GetInt64(5)),
-                CompletedAt = reader.IsDBNull(6) ? null : FromUnix(reader.GetInt64(6)),
-                OutputFilename = reader.IsDBNull(7) ? null : reader.GetString(7),
-                Error = reader.IsDBNull(8) ? null : reader.GetString(8),
-                PayoutThb = reader.IsDBNull(9) ? null : reader.GetInt64(9) / 100m,
-            });
-        }
+        while (reader.Read()) rows.Add(ReadJob(reader));
         return rows;
     }
 
@@ -601,10 +620,33 @@ public sealed class NodeStore : IDisposable
 
     // ------------------------------------------------------------- upkeep
 
-    /// <summary>Drops rows past <see cref="Retention"/> and reclaims the pages. Cheap; runs nightly.</summary>
-    public void Sweep()
+    /// <summary>
+    /// Drops finished work older than <see cref="RetentionDays"/> and reclaims
+    /// the pages. Cheap; runs nightly and whenever the owner asks.
+    /// </summary>
+    /// <returns>How many job rows were removed.</returns>
+    public int Sweep()
     {
-        long cutoff = DateTimeOffset.UtcNow.Subtract(Retention).ToUnixTimeMilliseconds();
+        // 0 means keep everything. Checkpoint anyway: that is what keeps the
+        // write-ahead log from growing without bound, and it is the half of
+        // this method that has nothing to do with retention.
+        if (RetentionDays <= 0)
+        {
+            Checkpoint();
+            return 0;
+        }
+
+        long cutoff = DateTimeOffset.UtcNow.AddDays(-RetentionDays).ToUnixTimeMilliseconds();
+        int removed;
+        lock (_writeGate)
+        {
+            using var counter = Open();
+            using var count = counter.CreateCommand();
+            count.CommandText = "SELECT COUNT(*) FROM jobs WHERE completed_at IS NOT NULL AND completed_at < $cutoff";
+            count.Parameters.AddWithValue("$cutoff", cutoff);
+            removed = Convert.ToInt32(count.ExecuteScalar() ?? 0);
+        }
+
         lock (_writeGate)
         {
             using var connection = Open();
@@ -617,7 +659,95 @@ public sealed class NodeStore : IDisposable
             command.Parameters.AddWithValue("$cutoff", cutoff);
             command.ExecuteNonQuery();
         }
+
+        return removed;
     }
+
+    /// <summary>Folds the write-ahead log back into the database file.</summary>
+    private void Checkpoint()
+    {
+        lock (_writeGate)
+        {
+            using var connection = Open();
+            Execute(connection, "PRAGMA wal_checkpoint(TRUNCATE);");
+        }
+    }
+
+    // ------------------------------------------------------------- history
+
+    /// <summary>
+    /// Finished work, newest first, for the owner's own record of what their
+    /// machine did.
+    /// </summary>
+    /// <remarks>
+    /// Read from the database rather than from the in-memory queue: the Live
+    /// Queue screen shows this session, and a machine that has been earning for
+    /// a month has nothing to show there after a restart.
+    /// </remarks>
+    public IReadOnlyList<JobRecord> FinishedJobs(int days, int limit = 500)
+    {
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT prompt_id, kind, status, nodes_total, submitted_at, started_at, completed_at, output_file, error, payout_satang
+              FROM jobs
+             WHERE completed_at IS NOT NULL
+               AND ($since = 0 OR completed_at >= $since)
+             ORDER BY completed_at DESC
+             LIMIT $n
+            """;
+        command.Parameters.AddWithValue("$since", SinceMillis(days));
+        command.Parameters.AddWithValue("$n", limit);
+
+        var rows = new List<JobRecord>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read()) rows.Add(ReadJob(reader));
+        return rows;
+    }
+
+    /// <summary>Totals over the same window the history is showing.</summary>
+    public JobTotals TotalsSince(int days)
+    {
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT
+                COUNT(*),
+                SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END),
+                COALESCE(SUM(payout_satang), 0),
+                COALESCE(SUM(CASE WHEN started_at IS NOT NULL THEN completed_at - started_at ELSE 0 END), 0)
+              FROM jobs
+             WHERE completed_at IS NOT NULL
+               AND ($since = 0 OR completed_at >= $since)
+            """;
+        command.Parameters.AddWithValue("$since", SinceMillis(days));
+
+        using var reader = command.ExecuteReader();
+        if (!reader.Read()) return new JobTotals();
+        return new JobTotals
+        {
+            Jobs = reader.GetInt32(0),
+            Completed = reader.IsDBNull(1) ? 0 : reader.GetInt32(1),
+            Failed = reader.IsDBNull(2) ? 0 : reader.GetInt32(2),
+            PayoutSatang = reader.GetInt64(3),
+            BusyTime = TimeSpan.FromMilliseconds(reader.GetInt64(4)),
+        };
+    }
+
+    /// <summary>The oldest finished job still on disk, so the screen can say what "all" covers.</summary>
+    public DateTimeOffset? OldestFinishedJob()
+    {
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT MIN(completed_at) FROM jobs WHERE completed_at IS NOT NULL";
+        object? value = command.ExecuteScalar();
+        return value is null or DBNull ? null : FromUnix(Convert.ToInt64(value));
+    }
+
+    /// <summary>0 for "everything", otherwise the cut-off in unix milliseconds.</summary>
+    private static long SinceMillis(int days) =>
+        days <= 0 ? 0 : DateTimeOffset.UtcNow.AddDays(-days).ToUnixTimeMilliseconds();
 
     public long SizeBytes()
     {

@@ -63,6 +63,15 @@ public sealed class NodeSettings
     /// <summary>Which screen opens first — a small courtesy that costs nothing.</summary>
     public string LastScreen { get; set; } = "dashboard";
 
+    /// <summary>
+    /// Days of finished work to keep on this machine; 0 keeps all of it.
+    /// </summary>
+    /// <remarks>
+    /// The owner's own record of what their card did, on their own disk, so the
+    /// length of it is their call. The sweep runs nightly against this number.
+    /// </remarks>
+    public int HistoryRetentionDays { get; set; } = 120;
+
     // ------------------------------------------------------------------
 
     private static bool[] DefaultSchedule()
