@@ -20,14 +20,67 @@ public static class FrameKind
     /// <summary>relay to agent: run this HTTP request against your local runtime.</summary>
     public const string Request = "req";
 
-    /// <summary>agent to relay: the answer to a <see cref="Request"/>.</summary>
+    /// <summary>agent to relay: the answer to a <see cref="Request"/>, whole, in one frame.</summary>
+    /// <remarks>
+    /// The only reply shape a v0.1.x agent knows, and still what a current
+    /// agent sends to a relay that has not advertised
+    /// <see cref="TunnelCaps.ResponseStreaming"/>. A relay has to accept it for
+    /// as long as agents that old are in the field.
+    /// </remarks>
     public const string Response = "res";
+
+    /// <summary>
+    /// agent to relay: the status and headers of a reply whose body follows as
+    /// <see cref="ResponseChunk"/> frames and ends with <see cref="ResponseEnd"/>.
+    /// </summary>
+    /// <remarks>
+    /// Sent only to a relay that advertised <see cref="TunnelCaps.ResponseStreaming"/>
+    /// in its <see cref="HelloAck"/>. Splitting the reply is what lets a relay
+    /// hand a finished video to aixman as it arrives instead of holding all of
+    /// it in memory first, and what lets its timeout measure silence rather
+    /// than size: a slow uplink moving a large file is busy, not stuck.
+    /// </remarks>
+    public const string ResponseHead = "res-head";
+
+    /// <summary>agent to relay: the next piece of a streamed reply, at most <see cref="WireCodec.MaxChunkBytes"/> of body.</summary>
+    public const string ResponseChunk = "res-chunk";
+
+    /// <summary>
+    /// agent to relay: the streamed reply is complete — or, with
+    /// <see cref="TunnelHeader.Aborted"/> set, will never be, and what was sent
+    /// so far must not be passed off as the whole answer.
+    /// </summary>
+    public const string ResponseEnd = "res-end";
+
+    /// <summary>
+    /// relay to agent: nobody is waiting for this request's answer any more
+    /// (aixman hung up, or the relay gave up on it). Stop working on it and
+    /// send nothing further for its id.
+    /// </summary>
+    /// <remarks>An agent that does not know this kind ignores it, which is safe: the relay discards what it sends anyway.</remarks>
+    public const string Cancel = "cancel";
 
     /// <summary>agent to relay: liveness plus telemetry.</summary>
     public const string Heartbeat = "hb";
 
     /// <summary>either direction: the session is going away, with a reason.</summary>
     public const string Bye = "bye";
+}
+
+/// <summary>
+/// Optional abilities a peer announces. Absent means "behave like v0.1".
+/// </summary>
+/// <remarks>
+/// Negotiated rather than assumed so that either side can be upgraded first: a
+/// new agent talking to the relay already in production, and a v0.1 agent
+/// talking to a new relay, both keep working. The relay lists what it
+/// understands in <see cref="FrameKind.HelloAck"/>; the agent uses a feature
+/// only when it is on that list.
+/// </remarks>
+public static class TunnelCaps
+{
+    /// <summary>The relay accepts <see cref="FrameKind.ResponseHead"/> / <see cref="FrameKind.ResponseChunk"/> / <see cref="FrameKind.ResponseEnd"/>.</summary>
+    public const string ResponseStreaming = "res-stream";
 }
 
 /// <summary>
@@ -56,6 +109,16 @@ public sealed class TunnelHeader
     [JsonPropertyName("runtimes")]
     public string[]? Runtimes { get; set; }
 
+    // --- hello-ack ---
+
+    /// <summary>What the relay understands beyond v0.1 — see <see cref="TunnelCaps"/>.</summary>
+    [JsonPropertyName("caps")]
+    public string[]? Caps { get; set; }
+
+    /// <summary>The largest <see cref="FrameKind.ResponseChunk"/> body the relay will take; absent means <see cref="WireCodec.MaxChunkBytes"/>.</summary>
+    [JsonPropertyName("maxChunkBytes")]
+    public int? MaxChunkBytes { get; set; }
+
     // --- req ---
 
     [JsonPropertyName("method")]
@@ -69,6 +132,16 @@ public sealed class TunnelHeader
 
     [JsonPropertyName("status")]
     public int? Status { get; set; }
+
+    // --- res-end ---
+
+    /// <summary>
+    /// True when the agent could not finish a streamed reply. The relay then
+    /// cuts the aixman response off rather than ending it cleanly, so a
+    /// truncated image is never mistaken for a whole one.
+    /// </summary>
+    [JsonPropertyName("aborted")]
+    public bool? Aborted { get; set; }
 
     // --- req + res ---
 
@@ -114,6 +187,20 @@ public sealed class AgentTelemetry
     /// <summary>False while the owner is gaming or the schedule says "my time".</summary>
     [JsonPropertyName("accepting")]
     public bool Accepting { get; set; }
+
+    /// <summary>
+    /// True while the node is running work — a customer's render, or the
+    /// owner's own ComfyUI queue. Absent from agents that predate it, which the
+    /// relay passes on as "unknown" rather than guessing "idle".
+    /// </summary>
+    [JsonPropertyName("busy")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? Busy { get; set; }
+
+    /// <summary>Prompts waiting or running in the node's ComfyUI, when the agent reports it.</summary>
+    [JsonPropertyName("queueRemaining")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? QueueRemaining { get; set; }
 
     /// <summary>Share of capacity the owner is donating right now, 0-100.</summary>
     [JsonPropertyName("freeSharePct")]
