@@ -8,4 +8,7 @@
     <Project Path="src/GpuxMine.Protocol/GpuxMine.Protocol.csproj" />
     <Project Path="src/GpuxMine.Relay/GpuxMine.Relay.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/GpuxMine.Relay.Tests/GpuxMine.Relay.Tests.csproj" />
+  </Folder>
 </Solution>

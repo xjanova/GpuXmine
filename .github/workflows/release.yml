@@ -57,11 +57,14 @@ jobs:
           "version=$version" >> $env:GITHUB_OUTPUT
           Write-Host "building $version"
 
+      # The solution names the test projects (tests/*), so this `dotnet test`
+      # really runs them — before tests/ existed it ran nothing and passed. A
+      # red test stops the release here, before anything is published.
       - name: Build and test
         shell: pwsh
         run: |
-          dotnet build -c Release -p:Version=${{ steps.version.outputs.version }} --nologo
-          dotnet test -c Release --no-build --nologo
+          dotnet build GpuxMine.slnx -c Release -p:Version=${{ steps.version.outputs.version }} --nologo
+          dotnet test GpuxMine.slnx -c Release --no-build --nologo --logger "console;verbosity=normal"
 
       # The Windows client — the thing a node owner actually installs, and the
       # only artifact in the self-update path.
