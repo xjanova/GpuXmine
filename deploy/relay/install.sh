@@ -56,6 +56,19 @@ STAMP="$(date +%Y%m%d%H%M%S)"
 TARGET="$ROOT/releases/$STAMP"
 mkdir -p "$TARGET"
 
+# สำเนาทะเบียน worker ก่อนเปลี่ยนตัวโปรแกรมทุกครั้ง ตัว relay เองก็เก็บ
+# workers.json.bak กับสำเนารายวันใน backups/ อยู่แล้ว ชุดนี้คือจุดที่ย้อนกลับได้
+# แน่นอนถ้ารุ่นใหม่เขียนไฟล์ออกมาผิด — ชื่อขึ้นต้นต่างจากสำเนารายวัน
+# เพื่อไม่ให้การหมุนเวียนของ relay ลบทิ้ง
+if [[ -f "$STATE/workers.json" ]]; then
+    mkdir -p "$STATE/backups"
+    cp -p "$STATE/workers.json" "$STATE/backups/preinstall-workers-$STAMP.json"
+    chown -R gpuxmine:gpuxmine "$STATE/backups"
+    chmod 750 "$STATE/backups"
+    ls -1t "$STATE/backups"/preinstall-workers-*.json 2>/dev/null | tail -n +6 | xargs -r rm -f
+    echo "    เก็บสำเนา workers.json ไว้ที่ backups/preinstall-workers-$STAMP.json"
+fi
+
 echo "==> ดาวน์โหลดและแตกไฟล์"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -86,6 +99,19 @@ if [[ ! -f "$ENV_FILE" ]]; then
     echo
 else
     echo "    ใช้ค่าเดิมใน $ENV_FILE"
+fi
+
+# กุญแจอ่านอย่างเดียว: เปิดได้แค่ GET /admin/workers ให้ aixman ถืออันนี้แทน
+# admin key (ซึ่งออก worker ใหม่ได้ทั้งเครือข่าย) สร้างครั้งเดียว ไม่ทับของเดิม
+if ! grep -q '^GPUXMINE_OBSERVER_KEY=' "$ENV_FILE"; then
+    OBSERVER="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+    printf 'GPUXMINE_OBSERVER_KEY=%s\n' "$OBSERVER" >> "$ENV_FILE"
+    chmod 600 "$ENV_FILE"
+    echo
+    echo "    สร้าง observer key แล้ว (อ่านรายชื่อเครื่องได้อย่างเดียว) — ให้ aixman ใช้แทน admin key:"
+    echo
+    echo "      X-Admin-Key: $OBSERVER"
+    echo
 fi
 
 echo "==> ติดตั้ง systemd unit"

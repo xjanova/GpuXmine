@@ -35,6 +35,12 @@ Environment=Relay__StorePath=/var/lib/gpuxmine-relay/workers.json
 # The key that can enrol a worker anywhere in the network. Only XMAN Studio
 # holds the other copy. Keep it out of this file:
 #   /etc/gpuxmine-relay.env  →  GPUXMINE_ADMIN_KEY=...   (chmod 600)
+#
+# The same file carries the read-only key for GET /admin/workers — what aixman
+# should hold instead of the admin key — and, once XMAN Studio stores tunnel
+# tokens, the switch that starts issuing them (see RELAY-DEPLOY.md):
+#   GPUXMINE_OBSERVER_KEY=...
+#   Relay__IssueTunnelTokens=true
 EnvironmentFile=/etc/gpuxmine-relay.env
 
 User=gpuxmine
@@ -52,6 +58,10 @@ LimitNOFILE=65535
 # เพดานพวกนี้ไม่ใช่การจูนประสิทธิภาพ แต่เป็นสัญญาว่า "ต่อให้ relay ถูกยิงถล่ม
 # หรือรั่ว มันก็แตะได้ไม่เกินนี้" ตัว relay เองใช้ราว 300 MB และแทบไม่กิน CPU
 # เพราะงานหนักอยู่ที่การ์ดจอของคนอื่น ที่นี่แค่ส่งไบต์ผ่าน
+#
+# ข้างในตัว relay มีเพดานของตัวเองอีกชั้น: ไบต์ที่ถือไว้รอส่งต่อทั้งหมดรวมกัน
+# ไม่เกิน Relay__BufferBudgetBytes (ค่า default 384 MiB) ต่ำกว่า MemoryHigh
+# โดยตั้งใจ — เครื่องไหนส่งมาเกิน งานของเครื่องนั้นถูกตัด ไม่ใช่ทั้ง process ถูกฆ่า
 CPUQuota=400%
 MemoryHigh=768M
 MemoryMax=1G
