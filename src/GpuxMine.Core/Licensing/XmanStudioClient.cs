@@ -162,17 +162,31 @@ public sealed class XmanStudioClient(HttpClient http, string baseUrl, string pro
     /// of failure it was — a refused identity needs the owner to re-pair, an
     /// outage needs nobody, and the caller waits very differently for each.
     /// </para>
+    /// <para>
+    /// <paramref name="updatedAfter"/> asks for the jobs that changed after that
+    /// moment, oldest first, a page at a time (<see cref="NodeStatus.JobsMore"/>)
+    /// — instead of the latest fifty, which a fast machine outruns within one
+    /// hold window and so never sees its older jobs cleared, paid or voided.
+    /// A website from before the cursor ignores it and answers the latest fifty
+    /// with no <c>jobs_more</c>, which is how the caller tells the two apart.
+    /// </para>
     /// </remarks>
-    public async Task<NodeStatusResult> StatusAsync(string workerId, string token, CancellationToken ct = default)
+    public async Task<NodeStatusResult> StatusAsync(string workerId, string token, DateTimeOffset? updatedAfter = null, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(workerId) || string.IsNullOrWhiteSpace(token))
             return new NodeStatusResult(StudioOutcome.IdentityRejected, null, null, "เครื่องนี้ยังไม่ได้ลงทะเบียน");
 
         try
         {
+            // Not sent at all without a cursor, so the call is byte for byte the
+            // one every website since C6 has answered.
+            object request = updatedAfter is { } after
+                ? new { worker_id = workerId, token, updated_after = StudioTime.Format(after) }
+                : new { worker_id = workerId, token };
+
             using HttpResponseMessage response = await http.PostAsJsonAsync(
                 $"{_base}/api/v1/product/{productSlug}/status",
-                new { worker_id = workerId, token },
+                request,
                 ct);
 
             Refused("status", response);
@@ -184,6 +198,16 @@ public sealed class XmanStudioClient(HttpClient http, string baseUrl, string pro
                 return body is { Success: true, Data: { } data }
                     ? new NodeStatusResult(StudioOutcome.Ok, data, code, null)
                     : new NodeStatusResult(StudioOutcome.Unavailable, null, code, $"XMAN Studio ตอบกลับในรูปแบบที่อ่านไม่ได้ (HTTP {code})");
+            }
+
+            // The website refused the cursor, not the machine: a 422 that
+            // names updated_after comes after the identity was accepted. Read
+            // as a refused identity it would tell the owner to re-pair a
+            // machine that is fine, so ask once more the old way instead.
+            if (code == 422 && updatedAfter is not null && body?.Errors?.ContainsKey("updated_after") == true)
+            {
+                log?.Invoke("[net] XMAN Studio ไม่รับ updated_after ที่ส่งไป — อ่านงานล่าสุดแบบเดิมแทน");
+                return await StatusAsync(workerId, token, null, ct);
             }
 
             return code switch
@@ -499,6 +523,13 @@ public sealed class NodeStatus
     [JsonPropertyName("node")] public NodeDispatch? Node { get; set; }
     [JsonPropertyName("earnings")] public EarningsSummary? Earnings { get; set; }
     [JsonPropertyName("jobs")] public List<SettledJob>? Jobs { get; set; }
+
+    /// <summary>
+    /// Only in an answer to <c>updated_after</c>: true when more changed jobs
+    /// follow the last one listed. Null means the website ignored the cursor
+    /// (it predates it) and <see cref="Jobs"/> is the latest fifty as before.
+    /// </summary>
+    [JsonPropertyName("jobs_more")] public bool? JobsMore { get; set; }
 }
 
 /// <summary>What the pool last said about this machine, as XMAN Studio recorded it.</summary>
@@ -580,6 +611,14 @@ public sealed class SettledJob
     [JsonPropertyName("completed_at")] public string? CompletedAtText { get; set; }
 
     [JsonIgnore] public DateTimeOffset? CompletedAt => StudioTime.Parse(CompletedAtText);
+
+    /// <summary>
+    /// When the website last changed this row — the cursor the node sends back
+    /// as <c>updated_after</c>. Absent from a website that predates the cursor.
+    /// </summary>
+    [JsonPropertyName("updated_at")] public string? UpdatedAtText { get; set; }
+
+    [JsonIgnore] public DateTimeOffset? UpdatedAt => StudioTime.Parse(UpdatedAtText);
 }
 
 internal sealed class StatusEnvelope
@@ -587,6 +626,9 @@ internal sealed class StatusEnvelope
     [JsonPropertyName("success")] public bool Success { get; set; }
     [JsonPropertyName("message")] public string? Message { get; set; }
     [JsonPropertyName("data")] public NodeStatus? Data { get; set; }
+
+    /// <summary>Laravel's validation errors, by field — only read to tell a refused cursor from a refused machine.</summary>
+    [JsonPropertyName("errors")] public Dictionary<string, System.Text.Json.JsonElement>? Errors { get; set; }
 }
 
 internal static class StudioTime
@@ -594,4 +636,13 @@ internal static class StudioTime
     public static DateTimeOffset? Parse(string? text) =>
         DateTimeOffset.TryParse(text, System.Globalization.CultureInfo.InvariantCulture,
             System.Globalization.DateTimeStyles.AssumeUniversal, out var at) ? at : null;
+
+    /// <summary>
+    /// ISO 8601 in UTC to the second — the shape XMAN Studio's own
+    /// <c>updated_at</c> comes in, whatever the machine's culture or calendar.
+    /// A Thai culture would otherwise write the Buddhist year, 2569, and the
+    /// website would read a cursor five centuries in the future.
+    /// </summary>
+    public static string Format(DateTimeOffset at) =>
+        at.ToUniversalTime().ToString("yyyy'-'MM'-'dd'T'HH':'mm':'ss'+00:00'", System.Globalization.CultureInfo.InvariantCulture);
 }

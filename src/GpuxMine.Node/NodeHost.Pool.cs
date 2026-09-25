@@ -20,6 +20,13 @@ namespace GpuxMine.Node;
 /// an hour; an outage backs off from three minutes to thirty. None of it can
 /// stop the node rendering.
 /// </para>
+/// <para>
+/// Jobs are read by cursor: the website is asked for what changed after the
+/// newest <c>updated_at</c> this worker has already seen, which is kept in the
+/// ledger. The latest fifty, which is all the call used to return, is less
+/// than a fast machine finishes inside one hold window — its older jobs went
+/// on being cleared, paid and voided on the website and stayed "pending" here.
+/// </para>
 /// </remarks>
 public sealed partial class NodeHost
 {
@@ -29,10 +36,36 @@ public sealed partial class NodeHost
     internal static readonly TimeSpan PoolPollNotSupported = TimeSpan.FromMinutes(60);
     internal static readonly TimeSpan PoolPollFailureCap = TimeSpan.FromMinutes(30);
 
+    /// <summary>The ledger setting that holds the job cursor, and whose worker it belongs to.</summary>
+    internal const string PoolCursorSetting = "pool-status-cursor";
+
     /// <summary>
-    /// The least time between two calls, however often refresh is pressed.
-    /// XMAN Studio allows thirty a minute per machine; a double click or an
-    /// owner hammering the button should cost one call, not thirty.
+    /// Calls one pass may make while the website says more changed jobs
+    /// follow. XMAN Studio allows ten a minute per machine, and passes are at
+    /// least <see cref="PoolMinSpacing"/> apart however often refresh is
+    /// pressed — two calls a pass stays under it even then. Two pages is four
+    /// hundred jobs, far more than a machine changes between two polls; the
+    /// rest of a backlog waits for <see cref="PoolCatchUp"/>.
+    /// </summary>
+    internal const int PoolPagesPerPass = 2;
+
+    /// <summary>How soon the next pass comes when a backlog is still being read.</summary>
+    internal static readonly TimeSpan PoolCatchUp = TimeSpan.FromMinutes(1);
+
+    /// <summary>
+    /// How far back a worker with no cursor yet starts reading, beyond the
+    /// hold: a job finished just before the hold window began is still waiting
+    /// to be cleared and paid, and a review can take an administrator a day or two.
+    /// </summary>
+    internal static readonly TimeSpan PoolCursorMargin = TimeSpan.FromHours(48);
+
+    /// <summary>The hold XMAN Studio uses unless configured otherwise — the start's guess until the website has said.</summary>
+    internal const int PoolAssumedHoldHours = 24;
+
+    /// <summary>
+    /// The least time between two passes, however often refresh is pressed.
+    /// XMAN Studio allows ten calls a minute per machine; a double click or an
+    /// owner hammering the button should cost one pass, not ten.
     /// </summary>
     internal static readonly TimeSpan PoolMinSpacing = TimeSpan.FromSeconds(15);
 
@@ -109,11 +142,17 @@ public sealed partial class NodeHost
         // shown — or written into the ledger — as if it were about the new.
         string workerId = Options.WorkerId, token = Options.Token;
 
-        NodeStatusResult result = await _studio.StatusAsync(workerId, token, ct);
+        // Where this worker's jobs were last read up to. None — first run, a
+        // new pairing, a website that never took the cursor — starts one hold
+        // plus two days back, so the jobs still moving towards the wallet are
+        // all read once; the hold is the website's own once it has said.
+        DateTimeOffset? kept = LoadPoolCursor(workerId);
+        DateTimeOffset cursor = kept ?? PoolCursorStart(State.Pool.Earnings?.HoldHours ?? PoolAssumedHoldHours, DateTimeOffset.UtcNow);
+
+        NodeStatusResult result = await _studio.StatusAsync(workerId, token, cursor, ct);
         DateTimeOffset now = DateTimeOffset.Now;
 
-        if (!string.Equals(Options.WorkerId, workerId, StringComparison.Ordinal)
-            || !string.Equals(Options.Token, token, StringComparison.Ordinal))
+        if (!SameIdentity(workerId, token))
         {
             return TimeSpan.Zero;   // ask again, about the machine it is now
         }
@@ -122,16 +161,19 @@ public sealed partial class NodeHost
         {
             case StudioOutcome.Ok when result.Status is { } status:
                 _poolFailures = 0;
-                int changed = RecordSettlements(status);
+                if (await ReadJobPagesAsync(workerId, token, status, cursor, fresh: kept is null, ct) is not { } pass)
+                    return TimeSpan.Zero;   // re-paired between two pages
+
                 Publish(new PoolView
                 {
                     Outcome = PoolOutcome.Ok,
-                    Last = status,
+                    Last = pass.Latest,
                     LastOkAt = now,
                     CheckedAt = now,
-                    LedgerChanges = changed,
+                    LedgerChanges = pass.Moved.Count,
                 });
-                return cadence;
+                SayWhatWasPaid(pass.Moved, pass.Latest.Earnings?.HoldHours);
+                return pass.More && PoolCatchUp < cadence ? PoolCatchUp : cadence;
 
             case StudioOutcome.IdentityRejected:
                 _poolFailures = 0;
@@ -169,16 +211,148 @@ public sealed partial class NodeHost
         }
     }
 
-    /// <summary>
-    /// Writes what each of this machine's jobs was settled at into the ledger,
-    /// and tells the owner about what changed — once, not on every poll.
-    /// </summary>
-    /// <returns>How many ledger rows changed.</returns>
-    private int RecordSettlements(NodeStatus status)
-    {
-        if (status.Jobs is not { Count: > 0 } jobs) return 0;
+    private bool SameIdentity(string workerId, string token) =>
+        string.Equals(Options.WorkerId, workerId, StringComparison.Ordinal)
+        && string.Equals(Options.Token, token, StringComparison.Ordinal);
 
+    /// <summary>What one pass read: the freshest answer, the ledger rows it moved, and whether a backlog remains.</summary>
+    private sealed record PoolPass(NodeStatus Latest, List<SettledJob> Moved, bool More);
+
+    /// <summary>
+    /// Writes the first answer's jobs into the ledger, then follows the cursor
+    /// for as long as the website says more changed jobs follow — up to
+    /// <see cref="PoolPagesPerPass"/> calls — keeping the newest
+    /// <c>updated_at</c> seen as this worker's cursor after every page.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A website that ignored the cursor answers with no <c>jobs_more</c>: its
+    /// jobs are the latest fifty, recorded exactly as before, and no cursor is
+    /// kept — a later website that takes it starts from the beginning.
+    /// </para>
+    /// <para>
+    /// A later page that fails ends the pass with what was read. The cursor
+    /// only ever moves past jobs already written, so the next pass picks up
+    /// where this one stopped.
+    /// </para>
+    /// </remarks>
+    /// <param name="fresh">No cursor was kept: the start is a guess the first answer may widen.</param>
+    /// <returns>Null when the machine was re-paired between two calls.</returns>
+    private async Task<PoolPass?> ReadJobPagesAsync(string workerId, string token, NodeStatus first, DateTimeOffset cursor, bool fresh, CancellationToken ct)
+    {
         var moved = new List<SettledJob>();
+        NodeStatus page = first;
+
+        for (int calls = 1; ; calls++)
+        {
+            moved.AddRange(RecordSettlements(page));
+
+            if (page.JobsMore is not { } more)
+                return new PoolPass(page, moved, More: false);   // the latest fifty, from a website before the cursor
+
+            if (fresh && page.Earnings?.HoldHours is { } hold
+                && PoolCursorStart(hold, DateTimeOffset.UtcNow) is var wider && wider < cursor)
+            {
+                // The start assumed the default hold and the website holds
+                // longer. Read again from further back; what this page
+                // already wrote is written again as no change.
+                cursor = wider;
+            }
+            else
+            {
+                DateTimeOffset? newest = page.Jobs?.Max(j => j.UpdatedAt);
+                bool advanced = newest > cursor;
+                if (advanced) cursor = newest!.Value;
+                // Kept even when nothing came back, so a fresh start is pinned
+                // rather than sliding forward with the clock past a job that
+                // is still inside the website's settle window.
+                SavePoolCursor(workerId, cursor);
+
+                if (!more) return new PoolPass(page, moved, More: false);
+                if (!advanced)
+                {
+                    // More, but nothing newer to ask after: asking again would
+                    // return this same page for ever.
+                    Log.Warn("[pool] XMAN Studio บอกว่ายังมีงานต่อ แต่ไม่ได้ส่ง updated_at ที่ใหม่กว่าเดิมมาให้ถามต่อ — จะถามใหม่รอบหน้า");
+                    return new PoolPass(page, moved, More: false);
+                }
+            }
+            fresh = false;
+
+            if (calls >= PoolPagesPerPass) return new PoolPass(page, moved, More: true);
+
+            NodeStatusResult next = await _studio.StatusAsync(workerId, token, cursor, ct);
+            if (!SameIdentity(workerId, token)) return null;
+            if (next is not { Outcome: StudioOutcome.Ok, Status: { } status })
+                return new PoolPass(page, moved, More: true);   // throttled or down mid-backlog: carry on next pass
+
+            page = status;
+        }
+    }
+
+    /// <summary>Where a worker with no cursor starts reading: one hold and <see cref="PoolCursorMargin"/> back.</summary>
+    /// <remarks>
+    /// The hold comes from the website and is clamped to a month, so a
+    /// nonsense value there cannot overflow the arithmetic or ask for years.
+    /// Whole seconds, like the website's own timestamps.
+    /// </remarks>
+    internal static DateTimeOffset PoolCursorStart(int holdHours, DateTimeOffset now)
+    {
+        DateTimeOffset start = now.ToUniversalTime() - TimeSpan.FromHours(Math.Clamp(holdHours, 0, 24 * 30)) - PoolCursorMargin;
+        return DateTimeOffset.FromUnixTimeSeconds(start.ToUnixTimeSeconds());
+    }
+
+    /// <summary>The cursor kept for <paramref name="workerId"/>, or null when there is none for that worker.</summary>
+    /// <remarks>
+    /// One setting, holding the worker it belongs to: after a re-pairing the
+    /// new worker's jobs are a different list, and reading them from the old
+    /// worker's cursor would skip everything before it. A value that cannot be
+    /// read, or lies absurdly far in the future, is treated as none — the cost
+    /// is one fresh start, never a machine that stops seeing its payouts.
+    /// </remarks>
+    private DateTimeOffset? LoadPoolCursor(string workerId)
+    {
+        try
+        {
+            if (Store.GetSetting(PoolCursorSetting) is not { Length: > 0 } json) return null;
+            if (System.Text.Json.JsonSerializer.Deserialize<PoolCursor>(json) is not { } saved) return null;
+            if (!string.Equals(saved.Worker, workerId, StringComparison.Ordinal)) return null;
+            if (saved.After <= 0 || saved.After > DateTimeOffset.UtcNow.AddDays(30).ToUnixTimeSeconds()) return null;
+            return DateTimeOffset.FromUnixTimeSeconds(saved.After);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"[warn] อ่านตำแหน่งที่อ่านงานจาก XMAN Studio ไว้ไม่ได้ — เริ่มอ่านใหม่: {ex.Message}");
+            return null;
+        }
+    }
+
+    private void SavePoolCursor(string workerId, DateTimeOffset cursor)
+    {
+        try
+        {
+            Store.SetSetting(PoolCursorSetting, System.Text.Json.JsonSerializer.Serialize(new PoolCursor(workerId, cursor.ToUnixTimeSeconds())));
+        }
+        catch (Exception ex)
+        {
+            // The next pass reads the same page again; JobSettled writes only what changed.
+            Log.Warn($"[warn] จำตำแหน่งที่อ่านงานจาก XMAN Studio ไม่ได้: {ex.Message}");
+        }
+    }
+
+    /// <param name="Worker">Whose jobs the cursor walks.</param>
+    /// <param name="After">Unix seconds: the newest <c>updated_at</c> read so far.</param>
+    private sealed record PoolCursor(string Worker, long After);
+
+    /// <summary>
+    /// Writes what each of this machine's jobs was settled at into the ledger.
+    /// </summary>
+    /// <returns>The jobs whose ledger row changed.</returns>
+    private List<SettledJob> RecordSettlements(NodeStatus status)
+    {
+        var moved = new List<SettledJob>();
+        if (status.Jobs is not { Count: > 0 } jobs) return moved;
+
         foreach (SettledJob job in jobs)
         {
             // A row aixman wrote without a prompt id cannot be matched to
@@ -197,16 +371,18 @@ public sealed partial class NodeHost
             }
         }
 
-        if (moved.Count > 0)
-        {
-            int? hold = status.Earnings?.HoldHours;
-            string parts = string.Join(" · ", moved
-                .GroupBy(j => j.Status ?? "?", StringComparer.Ordinal)
-                .Select(g => $"{PoolView.DescribePayoutStatus(g.Key == "?" ? null : g.Key, hold)} {g.Count()} งาน {PoolView.Baht(g.Sum(j => j.AmountSatang))}"));
-            Log.Info($"[pay] XMAN Studio อัปเดตค่าตอบแทน {moved.Count} งานของเครื่องนี้ — {parts}");
-        }
+        return moved;
+    }
 
-        return moved.Count;
+    /// <summary>Tells the owner about the ledger rows one pass moved — once, not on every poll or every page.</summary>
+    private void SayWhatWasPaid(List<SettledJob> moved, int? hold)
+    {
+        if (moved.Count == 0) return;
+
+        string parts = string.Join(" · ", moved
+            .GroupBy(j => j.Status ?? "?", StringComparer.Ordinal)
+            .Select(g => $"{PoolView.DescribePayoutStatus(g.Key == "?" ? null : g.Key, hold)} {g.Count()} งาน {PoolView.Baht(g.Sum(j => j.AmountSatang))}"));
+        Log.Info($"[pay] XMAN Studio อัปเดตค่าตอบแทน {moved.Count} งานของเครื่องนี้ — {parts}");
     }
 
     /// <summary>

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.Text.Json.Nodes;
 using GpuxMine.Core.Licensing;
 using Microsoft.AspNetCore.Builder;
@@ -26,6 +27,12 @@ public sealed class FakeStudio : IAsyncDisposable
     public string Body { get; set; } = "{}";
     public string? CfRay { get; set; }
 
+    /// <summary>
+    /// Answers each status call from what it asked — for a test that plays
+    /// the website's cursor. Overrides <see cref="StatusCode"/> and <see cref="Body"/>.
+    /// </summary>
+    public Func<JsonNode, (int Status, string Body)>? Reply { get; set; }
+
     /// <summary>Set to hold the status reply until the test lets it go.</summary>
     public TaskCompletionSource? Gate { get; set; }
 
@@ -49,14 +56,16 @@ public sealed class FakeStudio : IAsyncDisposable
         app.MapPost("/api/v1/product/gpuxmine/status", async (HttpContext context) =>
         {
             using var reader = new StreamReader(context.Request.Body);
-            fake!.StatusCalls.Enqueue(await reader.ReadToEndAsync());
+            string asked = await reader.ReadToEndAsync();
+            fake!.StatusCalls.Enqueue(asked);
             fake.Arrived.TrySetResult();
             if (fake.Gate is { } gate) await gate.Task;
 
-            context.Response.StatusCode = fake.StatusCode;
+            var (status, body) = fake.Reply is { } reply ? reply(JsonNode.Parse(asked)!) : (fake.StatusCode, fake.Body);
+            context.Response.StatusCode = status;
             if (fake.CfRay is { } ray) context.Response.Headers["cf-ray"] = ray;
             context.Response.ContentType = "application/json";
-            await context.Response.WriteAsync(fake.Body);
+            await context.Response.WriteAsync(body);
         });
 
         app.MapPost("/api/v1/product/gpuxmine/claim", () => Results.Json(new
@@ -100,15 +109,17 @@ public class PoolStatusTests
     };
 
     /// <summary>A whole C6 answer, shaped exactly as XMAN Studio's controller writes it.</summary>
+    /// <param name="jobsMore">Set for an answer to <c>updated_after</c>; null is a website from before the cursor.</param>
     private static string Answer(
         string? dispatchStatus = "eligible",
         string? workerStatus = "ready",
         bool suspended = false,
         string? suspendedReason = null,
-        params object[] jobs) => new JsonObject
+        bool? jobsMore = null,
+        int holdHours = 24,
+        params object[] jobs)
     {
-        ["success"] = true,
-        ["data"] = new JsonObject
+        var data = new JsonObject
         {
             ["node"] = new JsonObject
             {
@@ -130,22 +141,30 @@ public class PoolStatusTests
                 ["month_satang"] = 11284,
                 ["donated_satang_30d"] = 80,
                 ["wallet_balance_satang"] = 25050,
-                ["hold_hours"] = 24,
+                ["hold_hours"] = holdHours,
             },
             ["jobs"] = JsonNode.Parse(System.Text.Json.JsonSerializer.Serialize(jobs)),
-        },
-    }.ToJsonString();
+        };
+        if (jobsMore is { } more) data["jobs_more"] = more;
+        return new JsonObject { ["success"] = true, ["data"] = data }.ToJsonString();
+    }
 
-    private static object Job(string? promptId, long amount, string status, long donated = 0, string jobId = "aix-gpu-job-1") => new Dictionary<string, object?>
+    private static object Job(string? promptId, long amount, string status, long donated = 0, string jobId = "aix-gpu-job-1", string? updatedAt = null)
     {
-        ["job_id"] = jobId,
-        ["prompt_id"] = promptId,
-        ["kind"] = "image",
-        ["amount_satang"] = amount,
-        ["donated_value_satang"] = donated,
-        ["status"] = status,
-        ["completed_at"] = "2026-09-25T02:59:00+00:00",
-    };
+        var job = new Dictionary<string, object?>
+        {
+            ["job_id"] = jobId,
+            ["prompt_id"] = promptId,
+            ["kind"] = "image",
+            ["amount_satang"] = amount,
+            ["donated_value_satang"] = donated,
+            ["status"] = status,
+            ["completed_at"] = "2026-09-25T02:59:00+00:00",
+        };
+        // Only a website with the cursor sends it.
+        if (updatedAt is not null) job["updated_at"] = updatedAt;
+        return job;
+    }
 
     private static void Finished(Storage.NodeStore store, string promptId, bool success = true)
     {
@@ -182,6 +201,49 @@ public class PoolStatusTests
         var sent = JsonNode.Parse(Assert.Single(studio.StatusCalls))!;
         Assert.Equal("gxm-test", sent["worker_id"]!.GetValue<string>());
         Assert.Equal("agent-token", sent["token"]!.GetValue<string>());
+        // No cursor asked for, none sent: the call every website since C6 answers.
+        Assert.Null(sent["updated_after"]);
+        Assert.Null(status.JobsMore);
+        Assert.Null(job.UpdatedAt);
+    }
+
+    [Fact]
+    public async Task StatusAsync_sends_the_cursor_as_utc_to_the_second_and_reads_a_page()
+    {
+        await using var studio = await FakeStudio.StartAsync();
+        // XMAN Studio writes its times in its own zone; Bangkok here.
+        studio.Body = Answer(jobsMore: true, jobs: [Job("p-1", 150, "cleared", updatedAt: "2026-09-25T10:00:05+07:00")]);
+        var client = new XmanStudioClient(new HttpClient(), studio.Url);
+
+        NodeStatusResult result = await client.StatusAsync("gxm-test", "agent-token",
+            new DateTimeOffset(2026, 9, 25, 10, 0, 0, TimeSpan.FromHours(7)));
+
+        var sent = JsonNode.Parse(Assert.Single(studio.StatusCalls))!;
+        Assert.Equal("2026-09-25T03:00:00+00:00", sent["updated_after"]!.GetValue<string>());
+        Assert.Equal(StudioOutcome.Ok, result.Outcome);
+        Assert.True(result.Status!.JobsMore);
+        Assert.Equal(new DateTimeOffset(2026, 9, 25, 3, 0, 5, TimeSpan.Zero), Assert.Single(result.Status.Jobs!).UpdatedAt);
+    }
+
+    [Fact]
+    public async Task A_refused_cursor_is_asked_again_the_old_way_and_not_read_as_a_refused_machine()
+    {
+        await using var studio = await FakeStudio.StartAsync();
+        studio.Reply = asked => asked["updated_after"] is null
+            ? (200, Answer(jobs: [Job("p-1", 150, "paid")]))
+            : (422, """{"message":"updated_after ต้องเป็นวันเวลาแบบ ISO 8601","errors":{"updated_after":["updated_after ต้องเป็นวันเวลาแบบ ISO 8601"]}}""");
+        var client = new XmanStudioClient(new HttpClient(), studio.Url);
+
+        NodeStatusResult result = await client.StatusAsync("gxm-test", "agent-token", DateTimeOffset.UtcNow);
+
+        Assert.Equal(StudioOutcome.Ok, result.Outcome);
+        Assert.Equal("p-1", Assert.Single(result.Status!.Jobs!).PromptId);
+        Assert.Equal(2, studio.StatusCalls.Count);
+        Assert.Null(JsonNode.Parse(studio.StatusCalls.Last())!["updated_after"]);
+
+        // A 422 about the machine itself is still a refused identity.
+        studio.Reply = _ => (422, """{"message":"token is required","errors":{"token":["token is required"]}}""");
+        Assert.Equal(StudioOutcome.IdentityRejected, (await client.StatusAsync("gxm-test", "agent-token", DateTimeOffset.UtcNow)).Outcome);
     }
 
     [Fact]
@@ -495,6 +557,240 @@ public class PoolStatusTests
         Assert.Equal(TimeSpan.Zero, next);   // ask again, about the machine it is now
         Assert.Equal(PoolOutcome.NotAsked, host.State.Pool.Outcome);
         Assert.Null(host.Store.RecentJobs(5).Single().PayoutThb);
+    }
+
+    // ----------------------------------------------------------- the cursor
+
+    /// <summary>
+    /// gpu_job_earnings for one machine, answered the way
+    /// GpuxMineNodeController::status answers: without a cursor the latest
+    /// fifty; with one, what changed after it, oldest first, two hundred at a
+    /// time, with <c>jobs_more</c>. Rows are in the order the jobs finished.
+    /// </summary>
+    private sealed class EarningsTable
+    {
+        public sealed record Row(string PromptId, DateTimeOffset UpdatedAt, string Status, long Amount);
+
+        public List<Row> Rows { get; } = [];
+        public int HoldHours { get; set; } = 24;
+
+        /// <summary>Which call (1-based) is throttled instead of answered.</summary>
+        public int? ThrottleCall { get; set; }
+
+        private int _calls;
+
+        public (int, string) Answer(JsonNode asked)
+        {
+            if (++_calls == ThrottleCall)
+                return (429, """{"success":false,"message":"ถามสถานะเครื่องถี่เกินไป — รอสักครู่แล้วลองใหม่"}""");
+
+            if (asked["updated_after"]?.GetValue<string>() is not { } after)
+            {
+                var latest = Enumerable.Reverse(Rows).Take(50).Select(Job).ToArray();
+                return (200, PoolStatusTests.Answer(holdHours: HoldHours, jobs: latest));
+            }
+
+            DateTimeOffset cursor = DateTimeOffset.Parse(after, CultureInfo.InvariantCulture);
+            var page = Rows.Where(r => r.UpdatedAt > cursor).OrderBy(r => r.UpdatedAt).Take(200).ToList();
+            return (200, PoolStatusTests.Answer(jobsMore: page.Count >= 200, holdHours: HoldHours, jobs: page.Select(Job).ToArray()));
+        }
+
+        // Written in Bangkok time, as the website may: the offset must not matter.
+        private static object Job(Row row) => PoolStatusTests.Job(row.PromptId, row.Amount, row.Status,
+            jobId: "aix-gpu-job-" + row.PromptId,
+            updatedAt: row.UpdatedAt.ToOffset(TimeSpan.FromHours(7)).ToString("yyyy-MM-dd'T'HH:mm:sszzz", CultureInfo.InvariantCulture));
+    }
+
+    /// <summary>A moment as the website stores it: whole seconds.</summary>
+    private static DateTimeOffset WholeSecond(DateTimeOffset at) => DateTimeOffset.FromUnixTimeSeconds(at.ToUnixTimeSeconds());
+
+    private static DateTimeOffset? AskedAfter(string call) =>
+        JsonNode.Parse(call)!["updated_after"]?.GetValue<string>() is { } text
+            ? DateTimeOffset.Parse(text, CultureInfo.InvariantCulture)
+            : null;
+
+    private static void Near(DateTimeOffset expected, DateTimeOffset? actual)
+    {
+        Assert.NotNull(actual);
+        Assert.InRange(actual.Value, expected - TimeSpan.FromSeconds(30), expected + TimeSpan.FromSeconds(30));
+    }
+
+    [Fact]
+    public async Task Every_changed_job_is_read_page_by_page_from_where_the_last_pass_stopped()
+    {
+        using var dir = new TempDir();
+        await using var studio = await FakeStudio.StartAsync();
+        var log = new NullLog();
+        await using var host = new NodeHost(Paired(dir, studio.Url), alsoLogTo: log);
+        var table = new EarningsTable();
+        DateTimeOffset start = WholeSecond(DateTimeOffset.UtcNow.AddHours(-60));
+        for (int i = 0; i < 700; i++)
+        {
+            Finished(host.Store, $"p-{i}");
+            table.Rows.Add(new($"p-{i}", start.AddSeconds(i), "pending", 100 + i));
+        }
+        studio.Reply = table.Answer;
+
+        DateTimeOffset began = DateTimeOffset.UtcNow;
+        TimeSpan next = await host.PollPoolStatusOnceAsync(CancellationToken.None);
+
+        // A worker with no cursor starts one hold and two days back, then
+        // asks after the newest job each page listed — two pages a pass.
+        var asked = studio.StatusCalls.Select(AskedAfter).ToArray();
+        Assert.Equal(NodeHost.PoolPagesPerPass, asked.Length);
+        Near(began - TimeSpan.FromHours(24 + 48), asked[0]);
+        Assert.Equal(start.AddSeconds(199), asked[1]);
+        Assert.Equal(400, host.State.Pool.LedgerChanges);
+        Assert.Single(log.Lines, l => l.StartsWith("[pay]", StringComparison.Ordinal));   // one line a pass, not one a page
+        // More to read: back in a minute, not in the stopped machine's fifteen.
+        Assert.Equal(NodeHost.PoolCatchUp, next);
+
+        // The next pass carries on from there, and reaches the end.
+        Assert.Equal(NodeHost.PoolPollStopped, await host.PollPoolStatusOnceAsync(CancellationToken.None));
+        var carried = studio.StatusCalls.Skip(2).Select(AskedAfter).ToArray();
+        Assert.Equal(new DateTimeOffset?[] { start.AddSeconds(399), start.AddSeconds(599) }, carried);
+        Assert.Equal(300, host.State.Pool.LedgerChanges);
+        Assert.All(host.Store.RecentJobs(1000), j => Assert.Equal("pending", j.PayoutStatus));
+        Assert.Contains("gxm-test", host.Store.GetSetting(NodeHost.PoolCursorSetting));
+
+        // One of the oldest jobs reaches the wallet — far outside the latest
+        // fifty, which is all the call used to show — and is seen.
+        table.Rows[3] = table.Rows[3] with { Status = "paid", UpdatedAt = start.AddSeconds(5000) };
+        await host.PollPoolStatusOnceAsync(CancellationToken.None);
+        Assert.Equal(start.AddSeconds(699), AskedAfter(studio.StatusCalls.Last()));
+        Assert.Equal(1, host.State.Pool.LedgerChanges);
+        Assert.Equal("paid", host.Store.RecentJobs(1000).Single(j => j.PromptId == "p-3").PayoutStatus);
+    }
+
+    [Fact]
+    public async Task A_page_that_fails_mid_backlog_keeps_what_was_read_and_carries_on_next_pass()
+    {
+        using var dir = new TempDir();
+        await using var studio = await FakeStudio.StartAsync();
+        await using var host = new NodeHost(Paired(dir, studio.Url));
+        var table = new EarningsTable { ThrottleCall = 2 };
+        DateTimeOffset start = WholeSecond(DateTimeOffset.UtcNow.AddHours(-10));
+        for (int i = 0; i < 250; i++)
+        {
+            Finished(host.Store, $"p-{i}");
+            table.Rows.Add(new($"p-{i}", start.AddSeconds(i), "cleared", 50));
+        }
+        studio.Reply = table.Answer;
+
+        TimeSpan next = await host.PollPoolStatusOnceAsync(CancellationToken.None);
+
+        Assert.Equal(PoolOutcome.Ok, host.State.Pool.Outcome);   // the first page was an answer
+        Assert.Equal(200, host.State.Pool.LedgerChanges);
+        Assert.Equal(NodeHost.PoolCatchUp, next);
+
+        await host.PollPoolStatusOnceAsync(CancellationToken.None);
+        Assert.Equal(start.AddSeconds(199), AskedAfter(studio.StatusCalls.Last()));
+        Assert.Equal(50, host.State.Pool.LedgerChanges);
+        Assert.All(host.Store.RecentJobs(1000), j => Assert.Equal("cleared", j.PayoutStatus));
+    }
+
+    [Fact]
+    public async Task A_new_pairing_reads_its_own_jobs_from_the_start_not_after_the_old_workers_cursor()
+    {
+        using var dir = new TempDir();
+        await using var studio = await FakeStudio.StartAsync();
+        await using var host = new NodeHost(Paired(dir, studio.Url));
+        var table = new EarningsTable();
+        table.Rows.Add(new("p-1", WholeSecond(DateTimeOffset.UtcNow.AddMinutes(-30)), "pending", 150));
+        studio.Reply = table.Answer;
+        await host.PollPoolStatusOnceAsync(CancellationToken.None);
+        Assert.Contains("gxm-test", host.Store.GetSetting(NodeHost.PoolCursorSetting));
+
+        var (paired, _) = await host.PairAsync("ABCD1234");
+        Assert.True(paired);
+        DateTimeOffset began = DateTimeOffset.UtcNow;
+        await host.PollPoolStatusOnceAsync(CancellationToken.None);
+
+        JsonNode last = JsonNode.Parse(studio.StatusCalls.Last())!;
+        Assert.Equal("gxm-new", last["worker_id"]!.GetValue<string>());
+        Near(began - TimeSpan.FromHours(24 + 48), AskedAfter(studio.StatusCalls.Last()));
+        Assert.Contains("gxm-new", host.Store.GetSetting(NodeHost.PoolCursorSetting));
+    }
+
+    [Theory]
+    [InlineData("{not json")]
+    [InlineData("""{"Worker":"gxm-test","After":-5}""")]
+    [InlineData("""{"Worker":"gxm-test","After":99999999999}""")]
+    public async Task A_cursor_that_cannot_be_right_is_a_fresh_start(string kept)
+    {
+        using var dir = new TempDir();
+        await using var studio = await FakeStudio.StartAsync();
+        await using var host = new NodeHost(Paired(dir, studio.Url));
+        studio.Reply = new EarningsTable().Answer;
+        host.Store.SetSetting(NodeHost.PoolCursorSetting, kept);
+
+        DateTimeOffset began = DateTimeOffset.UtcNow;
+        await host.PollPoolStatusOnceAsync(CancellationToken.None);
+
+        Near(began - TimeSpan.FromHours(24 + 48), AskedAfter(Assert.Single(studio.StatusCalls)));
+        Assert.Equal(PoolOutcome.Ok, host.State.Pool.Outcome);
+    }
+
+    [Fact]
+    public async Task A_website_holding_longer_than_a_day_widens_the_first_start()
+    {
+        using var dir = new TempDir();
+        await using var studio = await FakeStudio.StartAsync();
+        await using var host = new NodeHost(Paired(dir, studio.Url));
+        var table = new EarningsTable { HoldHours = 72 };
+        // Finished four days ago and still inside a 72-hour hold plus two days.
+        DateTimeOffset old = WholeSecond(DateTimeOffset.UtcNow.AddHours(-100));
+        Finished(host.Store, "p-old");
+        table.Rows.Add(new("p-old", old, "cleared", 150));
+        studio.Reply = table.Answer;
+
+        DateTimeOffset began = DateTimeOffset.UtcNow;
+        await host.PollPoolStatusOnceAsync(CancellationToken.None);
+
+        var asked = studio.StatusCalls.Select(AskedAfter).ToArray();
+        Assert.Equal(2, asked.Length);
+        Near(began - TimeSpan.FromHours(24 + 48), asked[0]);
+        Near(began - TimeSpan.FromHours(72 + 48), asked[1]);
+        Assert.Equal("cleared", host.Store.RecentJobs(5).Single().PayoutStatus);
+
+        // From then on it reads after the newest job it has seen.
+        await host.PollPoolStatusOnceAsync(CancellationToken.None);
+        Assert.Equal(old, AskedAfter(studio.StatusCalls.Last()));
+    }
+
+    [Fact]
+    public async Task A_website_that_ignores_the_cursor_is_read_the_old_way_and_a_kept_cursor_survives_it()
+    {
+        using var dir = new TempDir();
+        await using var studio = await FakeStudio.StartAsync();
+        await using var host = new NodeHost(Paired(dir, studio.Url));
+        Finished(host.Store, "p-1");
+        Finished(host.Store, "p-2");
+        // No jobs_more and no updated_at: a website from before the cursor.
+        studio.Body = Answer(jobs: [Job("p-1", 150, "paid")]);
+
+        DateTimeOffset began = DateTimeOffset.UtcNow;
+        Assert.Equal(NodeHost.PoolPollStopped, await host.PollPoolStatusOnceAsync(CancellationToken.None));
+        await host.PollPoolStatusOnceAsync(CancellationToken.None);
+
+        // One call a pass, exactly as before, and nothing kept to send next time.
+        Assert.Equal(2, studio.StatusCalls.Count);
+        Assert.All(studio.StatusCalls, c => Near(began - TimeSpan.FromHours(24 + 48), AskedAfter(c)));
+        Assert.Null(host.Store.GetSetting(NodeHost.PoolCursorSetting));
+        Assert.Equal("paid", host.Store.RecentJobs(5).Single(j => j.PromptId == "p-1").PayoutStatus);
+
+        // Upgraded: a cursor is kept …
+        DateTimeOffset seen = WholeSecond(DateTimeOffset.UtcNow.AddMinutes(-5));
+        studio.Body = Answer(jobsMore: false, jobs: [Job("p-2", 90, "pending", updatedAt: seen.ToString("yyyy-MM-dd'T'HH:mm:sszzz", CultureInfo.InvariantCulture))]);
+        await host.PollPoolStatusOnceAsync(CancellationToken.None);
+        Assert.Contains($"{seen.ToUnixTimeSeconds()}", host.Store.GetSetting(NodeHost.PoolCursorSetting));
+
+        // … and rolled back: the old way again, and the cursor waits for the next upgrade.
+        studio.Body = Answer(jobs: [Job("p-2", 90, "cleared")]);
+        await host.PollPoolStatusOnceAsync(CancellationToken.None);
+        Assert.Equal(seen, AskedAfter(studio.StatusCalls.Last()));
+        Assert.Equal("cleared", host.Store.RecentJobs(5).Single(j => j.PromptId == "p-2").PayoutStatus);
+        Assert.Contains($"{seen.ToUnixTimeSeconds()}", host.Store.GetSetting(NodeHost.PoolCursorSetting));
     }
 
     // ---------------------------------------------------------- the wording
