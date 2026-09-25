@@ -419,6 +419,173 @@ public sealed partial class ComfyRuntime
             entry.Filename, entry.Error));
     }
 
+    // ------------------------------------------------------------ benchmarks
+
+    /// <summary>Prompts the node's own assessment sent to ComfyUI and not yet cleared away, with when each was sent.</summary>
+    private readonly Dictionary<string, DateTimeOffset> _benchmarks = new(StringComparer.Ordinal);
+
+    /// <summary>One clearing pass at a time: the assessment's own and the reconcile loop's can meet.</summary>
+    private readonly SemaphoreSlim _benchmarkPass = new(1, 1);
+
+    private bool _warnedBenchmarks;
+
+    /// <summary>
+    /// How long a benchmark prompt is tried for before it is let go — one
+    /// ComfyUI never finishes, or whose history it will not give up.
+    /// </summary>
+    private static readonly TimeSpan BenchmarkWaitedFor = TimeSpan.FromDays(1);
+
+    /// <summary>
+    /// A prompt the node's own assessment sent, so what it wrote can be
+    /// cleared away. Handed over once the run is over, never while it is
+    /// still going: the assessment watches its prompt's history to see it
+    /// finish, and a pass that deleted it first would leave it waiting out
+    /// the clock on a render long done.
+    /// </summary>
+    /// <param name="sentAt">When it was sent; nothing older is deleted as its.</param>
+    public void NoteBenchmark(string promptId, DateTimeOffset? sentAt = null)
+    {
+        if (!IsPlainId(promptId)) return;
+        lock (_stateGate)
+        {
+            // Bounded: a ComfyUI that never answers must not grow this for
+            // the life of the process. Two prompts per assessment.
+            while (_benchmarks.Count >= 50)
+                _benchmarks.Remove(_benchmarks.MinBy(b => b.Value).Key);
+            _benchmarks.TryAdd(promptId, sentAt ?? DateTimeOffset.UtcNow);
+        }
+    }
+
+    /// <summary>
+    /// Deletes the images the node's own benchmark prompts wrote into the
+    /// owner's output folder, and their entries in ComfyUI's history.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Every assessment renders two small <c>gpuxmine_assess_*.png</c> into
+    /// the owner's ComfyUI, and they used to stay there — two more with every
+    /// re-assessment, and two more prompts the owner never ran in their history.
+    /// </para>
+    /// <para>
+    /// Held to the purge's own rules — inside ComfyUI's folder, by the names
+    /// ComfyUI's history gives for that prompt, written after the prompt was
+    /// sent — and one more: the name carries the assessment's prefix. Nothing
+    /// the owner made passes all four. A prompt still queued or running is
+    /// kept for the next pass; one ComfyUI no longer holds anywhere is let go,
+    /// as there is nothing of it left.
+    /// </para>
+    /// <para>
+    /// Fails soft: ComfyUI not answering, a file it will not give up — none
+    /// of it is the assessment's business, none of it throws, and the owner
+    /// is told once.
+    /// </para>
+    /// </remarks>
+    /// <returns>How many files were deleted.</returns>
+    public async Task<int> PurgeBenchmarksAsync(CancellationToken ct)
+    {
+        lock (_stateGate)
+        {
+            // Free when there is nothing to clear: ComfyUI is not even asked.
+            if (_benchmarks.Count == 0) return 0;
+        }
+
+        await _benchmarkPass.WaitAsync(ct);
+        try
+        {
+            return await PurgeBenchmarksOnceAsync(ct);
+        }
+        finally
+        {
+            _benchmarkPass.Release();
+        }
+    }
+
+    private async Task<int> PurgeBenchmarksOnceAsync(CancellationToken ct)
+    {
+        List<KeyValuePair<string, DateTimeOffset>> pending;
+        lock (_stateGate)
+        {
+            if (_benchmarks.Count == 0) return 0;
+            pending = [.. _benchmarks];
+        }
+
+        // Read before any history is. ComfyUI writes a prompt's history and
+        // takes it off the queue in one step, so a prompt missing from both —
+        // the queue first, the history after — has not merely finished in
+        // between: it never ran, or ComfyUI lost it. Read the other way round,
+        // one finishing between the two looked lost, and its image stayed.
+        QueueSnapshot? queue = await ReadQueueAsync(ct);
+        ComfyFolders? folders = null;
+        int deleted = 0, skipped = 0, cleared = 0;
+        string? note = null;
+
+        foreach (var (promptId, sentAt) in pending)
+        {
+            bool expired = DateTimeOffset.UtcNow - sentAt > BenchmarkWaitedFor;
+            HistoryEntry entry = await HistoryAsync(promptId, ct);
+
+            // ComfyUI is not answering: every other one would fail the same way.
+            if (entry.State == HistoryState.Unknown) break;
+
+            if (entry.State != HistoryState.Done)
+            {
+                // No entry and not in the queue: refused, or lost with a
+                // ComfyUI restart. Nothing of it is on disk to clear.
+                bool gone = entry.State == HistoryState.Absent && queue is not null && !queue.PromptIds.Contains(promptId);
+                if (gone || expired) ForgetBenchmark(promptId);
+                continue;
+            }
+
+            folders ??= await FoldersAsync(ct);
+            foreach (ComfyFile file in entry.Files ?? [])
+            {
+                if (!file.Filename.StartsWith(Assessment.Assessor.OutputPrefix + "_", StringComparison.Ordinal))
+                {
+                    skipped++;
+                    note ??= $"ไม่ใช่ไฟล์ของการประเมินเครื่อง จึงไม่ลบ: {file.Filename}";
+                    continue;
+                }
+
+                switch (TryDelete(folders, file, sentAt - OutputSkew, out string? why))
+                {
+                    case true: deleted++; break;
+                    case null: skipped++; note ??= why; break;
+                }
+            }
+
+            // Let go once the history is gone, whatever the files did — as a
+            // customer purge does: a file left above is one this could not
+            // delete on the next pass either. Kept when ComfyUI would not
+            // delete it, and asked again next time, for a day.
+            if (await DeleteHistoryAsync(promptId, ct))
+            {
+                ForgetBenchmark(promptId);
+                cleared++;
+            }
+            else if (expired)
+            {
+                ForgetBenchmark(promptId);
+            }
+        }
+
+        if (skipped > 0 && !_warnedBenchmarks)
+        {
+            _warnedBenchmarks = true;
+            _log.Warn($"[warn] ลบภาพที่การประเมินเครื่องทิ้งไว้ใน ComfyUI ไม่ได้ {skipped} ไฟล์: {note}");
+        }
+        if (deleted > 0 || cleared > 0)
+        {
+            Note($"cleared the assessment's own renders: {deleted} file(s) deleted" +
+                 $"{(skipped > 0 ? $", {skipped} left" : "")}, {cleared} history entr{(cleared == 1 ? "y" : "ies")} removed");
+        }
+        return deleted;
+    }
+
+    private void ForgetBenchmark(string promptId)
+    {
+        lock (_stateGate) _benchmarks.Remove(promptId);
+    }
+
     /// <summary>True when deleted, false when there was nothing to delete, null when it could not be.</summary>
     /// <param name="notBefore">
     /// The oldest the file may be and still belong to the job; null when the

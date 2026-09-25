@@ -27,14 +27,31 @@ namespace GpuxMine.Node.Assessment;
 /// the work (0.70 s / 1.21 s / 2.02 s / 3.03 s as the workload grows), which is
 /// what makes the number worth storing.
 /// </para>
+/// <para>
+/// It renders into the owner's own ComfyUI, so what it leaves there is
+/// cleared away after every run — see <paramref name="runtime"/>.
+/// </para>
 /// </remarks>
+/// <param name="runtime">
+/// Clears the benchmark's images out of the owner's output folder, and its
+/// prompts out of ComfyUI's history, once a run is over. Without one they
+/// stay, as they did before.
+/// </param>
 public sealed class Assessor(
     NodeOptions options,
     ILoggerish log,
     Storage.NodeStore? history = null,
     IHostHealthSource? health = null,
-    IProgress<AssessmentProgress>? progress = null) : IDisposable
+    IProgress<AssessmentProgress>? progress = null,
+    ComfyRuntime? runtime = null) : IDisposable
 {
+    /// <summary>
+    /// What the benchmark's SaveImage names its files by. ComfyUI writes
+    /// <c>{prefix}_{counter}_.png</c>, and the clean-up deletes nothing whose
+    /// name does not start with it.
+    /// </summary>
+    public const string OutputPrefix = "gpuxmine_assess";
+
     private readonly AssessmentProgressTracker _steps = new(progress);
 
     /// <summary>
@@ -107,6 +124,12 @@ public sealed class Assessor(
 
     private readonly HttpClient _http = Core.Net.NodeHttp.Create(TimeSpan.FromMinutes(5));
     private readonly Random _random = new();
+
+    /// <summary>
+    /// Every prompt this run has sent, with when — kept here, not in the
+    /// runtime, until the run is over.
+    /// </summary>
+    private readonly List<(string PromptId, DateTimeOffset SentAt)> _sent = [];
 
     /// <summary>
     /// What each kind of work needs, what the reference card takes for one
@@ -208,9 +231,58 @@ public sealed class Assessor(
             // nothing running looks exactly like the hang this was built to
             // rule out. The report itself says whether it worked.
             _steps.Done();
+
+            // Worked, failed or cancelled, what it wrote is not the owner's to
+            // keep. A pass still rendering — one that ran out the clock — is
+            // left to the node's reconcile loop, which clears it once it ends.
+            await ClearRendersAsync(ct);
         }
 
         return assessment;
+    }
+
+    /// <summary>
+    /// How long the run waits on its own clean-up. Past it, what is left is
+    /// the reconcile loop's to clear; the report is what this run is for.
+    /// </summary>
+    private static readonly TimeSpan ClearBudget = TimeSpan.FromSeconds(15);
+
+    /// <summary>
+    /// How long it gets when the run was cancelled — the node closing, which
+    /// waits three seconds for its loops before it lets ComfyUI's client go.
+    /// </summary>
+    private static readonly TimeSpan ClearBudgetOnCancel = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// Hands the prompts this run sent to the runtime, and clears their images
+    /// and history entries out of the owner's ComfyUI. Never throws.
+    /// </summary>
+    private async Task ClearRendersAsync(CancellationToken ct)
+    {
+        if (runtime is null) return;
+
+        // Only now, with the run over: see ComfyRuntime.NoteBenchmark.
+        foreach (var (promptId, sentAt) in _sent) runtime.NoteBenchmark(promptId, sentAt);
+        _sent.Clear();
+
+        using var budget = ct.IsCancellationRequested
+            ? new CancellationTokenSource(ClearBudgetOnCancel)
+            : CancellationTokenSource.CreateLinkedTokenSource(ct);
+        if (!ct.IsCancellationRequested) budget.CancelAfter(ClearBudget);
+
+        try
+        {
+            await runtime.PurgeBenchmarksAsync(budget.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            // Out of time: the reconcile loop takes what is left.
+        }
+        catch (Exception ex)
+        {
+            // A file left behind is not a reason to lose the report.
+            log.Warn($"[gpu] ล้างภาพจากการประเมินเครื่องออกจาก ComfyUI ไม่สำเร็จ: {ex.Message}");
+        }
     }
 
     private async Task ReadSystemAsync(NodeAssessment a, CancellationToken ct)
@@ -329,7 +401,7 @@ public sealed class Assessor(
 
             var sw = Stopwatch.StartNew();
             await RunGraphAsync(
-                ReferenceGraph(_random.Next(0, 0xFFFFFF)),
+                _random.Next(0, 0xFFFFFF),
                 ct,
                 elapsed => _steps.At(step, (int)(elapsed.TotalSeconds / expected * 100)));
             sw.Stop();
@@ -355,7 +427,12 @@ public sealed class Assessor(
     /// result is scaled to 256² before SaveImage, so PNG encoding stays a
     /// rounding error instead of becoming the thing being measured.
     /// </remarks>
-    private static string ReferenceGraph(int color)
+    /// <param name="promptId">
+    /// The id the node chose for it, so the clean-up knows it even when
+    /// ComfyUI's answer never arrives. A ComfyUI too old to take a client's id
+    /// answers with its own.
+    /// </param>
+    private static string ReferenceGraph(int color, string promptId)
     {
         // Built as a JSON tree rather than as text. A ComfyUI graph is almost
         // entirely braces, and every attempt to write one as an interpolated
@@ -395,12 +472,13 @@ public sealed class Assessor(
         nodes["99"] = Node("SaveImage", new JsonObject
         {
             ["images"] = Link("90"),
-            ["filename_prefix"] = "gpuxmine_assess",
+            ["filename_prefix"] = OutputPrefix,
         });
 
         return new JsonObject
         {
             ["prompt"] = nodes,
+            ["prompt_id"] = promptId,
             ["client_id"] = "gpuxmine-assessment",
         }.ToJsonString();
 
@@ -418,11 +496,17 @@ public sealed class Assessor(
     /// the honest signal available here. It is capped below 100 either way:
     /// the bar completes when the render does, never before.
     /// </param>
-    private async Task RunGraphAsync(string graph, CancellationToken ct, Action<TimeSpan>? onElapsed = null)
+    private async Task RunGraphAsync(int color, CancellationToken ct, Action<TimeSpan>? onElapsed = null)
     {
+        // Noted before it is sent: whatever becomes of the answer, what this
+        // prompt writes into the owner's output folder is cleared after.
+        string chosen = Guid.NewGuid().ToString();
+        int noted = _sent.Count;
+        _sent.Add((chosen, DateTimeOffset.UtcNow));
+
         using var submit = await _http.PostAsync(
             $"{options.ComfyUrl.TrimEnd('/')}/prompt",
-            new StringContent(graph, Encoding.UTF8, "application/json"), ct);
+            new StringContent(ReferenceGraph(color, chosen), Encoding.UTF8, "application/json"), ct);
 
         string body = await submit.Content.ReadAsStringAsync(ct);
         if (!submit.IsSuccessStatusCode)
@@ -430,6 +514,9 @@ public sealed class Assessor(
 
         string promptId = JsonNode.Parse(body)?["prompt_id"]?.GetValue<string>()
             ?? throw new InvalidOperationException("ComfyUI returned no prompt_id for the reference workload");
+
+        // A ComfyUI from before client-chosen ids ran it under its own.
+        if (promptId != chosen) _sent[noted] = (promptId, _sent[noted].SentAt);
 
         var running = Stopwatch.StartNew();
 

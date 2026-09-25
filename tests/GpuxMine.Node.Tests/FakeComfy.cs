@@ -59,6 +59,19 @@ public sealed class FakeComfy : IAsyncDisposable
     public bool DropPromptAnswers { get; set; }
 
     /// <summary>
+    /// Render every accepted prompt at once into this folder: each SaveImage
+    /// writes <c>{prefix}_{counter}_.png</c> with the next free counter, as
+    /// ComfyUI does, and the history names it. Null leaves prompts unrendered.
+    /// </summary>
+    public string? RenderInto { get; set; }
+
+    /// <summary>How many POST /prompt are taken; the ones after get a 400, as a graph ComfyUI will not run does.</summary>
+    public int PromptsAccepted { get; set; } = int.MaxValue;
+
+    /// <summary>Run as GET /queue is asked, before it answers — for something that happens just then.</summary>
+    public Action? OnQueueRead { get; set; }
+
+    /// <summary>
     /// "METHOD /path" prefixes that are taken and never answered — a ComfyUI
     /// wedged or stuck loading a model. Held until the caller hangs up or the
     /// fake is disposed.
@@ -105,6 +118,7 @@ public sealed class FakeComfy : IAsyncDisposable
 
         app.MapGet("/queue", () =>
         {
+            fake!.OnQueueRead?.Invoke();
             var running = fake!.Queue.Keys.Select((id, n) => new object[] { n, id, new { }, new { }, Array.Empty<string>() }).ToArray();
             return Results.Json(new { queue_running = running, queue_pending = Array.Empty<object>() });
         });
@@ -115,10 +129,13 @@ public sealed class FakeComfy : IAsyncDisposable
             string body = await reader.ReadToEndAsync();
             fake!.Prompts.Enqueue(body);
             if (fake.PromptDelay > TimeSpan.Zero) await Task.Delay(fake.PromptDelay);
+            if (fake.Prompts.Count > fake.PromptsAccepted)
+                return Results.Json(new { error = new { type = "prompt_outputs_failed_validation" } }, statusCode: 400);
 
             string? asked = fake.HonorPromptId ? JsonNode.Parse(body)?["prompt_id"]?.GetValue<string>() : null;
             string id = asked ?? $"prompt-{Interlocked.Increment(ref fake._nextPrompt)}";
             if (fake.QueueAcceptedPrompts) fake.Queue[id] = true;
+            if (fake.RenderInto is { } folder) fake.Render(id, JsonNode.Parse(body)?["prompt"] as JsonObject, folder);
 
             if (fake.DropPromptAnswers)
             {
@@ -194,6 +211,33 @@ public sealed class FakeComfy : IAsyncDisposable
                     }),
                 },
             },
+        };
+    }
+
+    /// <summary>What ComfyUI does with a finished graph: each SaveImage's file on disk, and a history naming them.</summary>
+    private void Render(string promptId, JsonObject? graph, string folder)
+    {
+        var outputs = new JsonObject();
+        foreach (var node in graph ?? new JsonObject())
+        {
+            if (node.Value?["class_type"]?.GetValue<string>() != "SaveImage") continue;
+            string prefix = node.Value["inputs"]?["filename_prefix"]?.GetValue<string>() ?? "ComfyUI";
+
+            // The next counter no file has yet — never over an existing one.
+            string name;
+            int counter = 1;
+            while (File.Exists(Path.Combine(folder, name = $"{prefix}_{counter:00000}_.png"))) counter++;
+            File.WriteAllText(Path.Combine(folder, name), "PNG");
+            outputs[node.Key] = new JsonObject
+            {
+                ["images"] = new JsonArray(new JsonObject { ["filename"] = name, ["subfolder"] = "", ["type"] = "output" }),
+            };
+        }
+
+        History[promptId] = new JsonObject
+        {
+            ["status"] = new JsonObject { ["status_str"] = "success", ["completed"] = true },
+            ["outputs"] = outputs,
         };
     }
 

@@ -1054,6 +1054,200 @@ public class ComfyRuntimeTests
         Assert.Equal(400, (await Send(runtime, "POST", "/aixman/purge", Http.Json(new { prompt_id = "../../x" }))).Status);
     }
 
+    // ------------------------------------------------- the assessment's own
+
+    [Theory]
+    [InlineData(true)]    // ComfyUI takes the id the node chose
+    [InlineData(false)]   // a ComfyUI from before client-chosen ids mints its own
+    public async Task An_assessment_clears_its_own_renders_and_history_and_nothing_of_the_owners(bool honorPromptId)
+    {
+        using var dir = new TempDir();
+        await using var comfy = await FakeComfy.StartAsync();
+        comfy.HonorPromptId = honorPromptId;
+        string output = Path.Combine(dir.Path, "output");
+        comfy.RenderInto = output;
+        await using var runtime = Runtime(comfy, options: new NodeOptions { ComfyUrl = comfy.Url, ComfyBaseDirectory = dir.Path });
+
+        // The owner's own work in the same folder and history — one of them
+        // under the benchmark's own name, left by a build that never cleared up.
+        string owners = dir.File("output/ComfyUI_00001_.png");
+        string olderBuilds = dir.File("output/gpuxmine_assess_00001_.png");
+        comfy.Finished("owners-prompt", "ComfyUI_00001_.png");
+
+        using var assessor = new Assessor(new NodeOptions { ComfyUrl = comfy.Url }, new NullLog(), runtime: runtime);
+        NodeAssessment report = await assessor.RunAsync("test", null, null, CancellationToken.None);
+
+        Assert.Null(report.Failed);
+        Assert.Equal(2, comfy.Prompts.Count);
+        Assert.Equal(new[] { Path.GetFileName(olderBuilds) }, Directory.GetFiles(output, "gpuxmine_assess_*").Select(Path.GetFileName));
+        Assert.True(File.Exists(owners));
+        Assert.Equal(2, comfy.HistoryDeletes.Count);
+        Assert.DoesNotContain("owners-prompt", comfy.HistoryDeletes);
+        Assert.True(comfy.History.ContainsKey("owners-prompt"));
+        Assert.All(comfy.HistoryDeletes, id => Assert.False(runtime.IsTunnelPrompt(id)));
+
+        // Nothing is left to clear: the next pass does not even ask ComfyUI.
+        int hits = comfy.Hits.Count;
+        Assert.Equal(0, await runtime.PurgeBenchmarksAsync(CancellationToken.None));
+        Assert.Equal(hits, comfy.Hits.Count);
+    }
+
+    [Fact]
+    public async Task A_failed_assessment_still_clears_what_it_rendered()
+    {
+        using var dir = new TempDir();
+        await using var comfy = await FakeComfy.StartAsync();
+        comfy.HonorPromptId = true;
+        string output = Directory.CreateDirectory(Path.Combine(dir.Path, "output")).FullName;
+        comfy.RenderInto = output;
+        comfy.PromptsAccepted = 1;   // the warm-up renders, the measured pass is refused
+        await using var runtime = Runtime(comfy, options: new NodeOptions { ComfyUrl = comfy.Url, ComfyBaseDirectory = dir.Path });
+
+        using var assessor = new Assessor(new NodeOptions { ComfyUrl = comfy.Url }, new NullLog(), runtime: runtime);
+        NodeAssessment report = await assessor.RunAsync("test", null, null, CancellationToken.None);
+
+        Assert.NotNull(report.Failed);
+        Assert.Empty(Directory.GetFiles(output, "gpuxmine_assess_*"));
+        Assert.Single(comfy.HistoryDeletes);
+
+        // The refused one never ran, so there is nothing of it to wait for.
+        int hits = comfy.Hits.Count;
+        Assert.Equal(0, await runtime.PurgeBenchmarksAsync(CancellationToken.None));
+        Assert.Equal(hits, comfy.Hits.Count);
+    }
+
+    [Fact]
+    public async Task A_cancelled_assessment_still_clears_the_pass_that_finished()
+    {
+        using var dir = new TempDir();
+        await using var comfy = await FakeComfy.StartAsync();
+        comfy.HonorPromptId = true;
+        string output = Directory.CreateDirectory(Path.Combine(dir.Path, "output")).FullName;
+        comfy.RenderInto = output;
+        await using var runtime = Runtime(comfy, options: new NodeOptions { ComfyUrl = comfy.Url, ComfyBaseDirectory = dir.Path });
+
+        // The node closing just as the measured pass starts: the warm-up has
+        // rendered and finished, and the run is cut off there.
+        using var closing = new CancellationTokenSource();
+        var steps = new SyncProgress(p =>
+        {
+            if (p.Steps.Any(s => s.Key == "measure" && s.Status == "running")) closing.Cancel();
+        });
+
+        using var assessor = new Assessor(new NodeOptions { ComfyUrl = comfy.Url }, new NullLog(), progress: steps, runtime: runtime);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => assessor.RunAsync("test", null, null, closing.Token));
+
+        Assert.Empty(Directory.GetFiles(output, "gpuxmine_assess_*"));
+        Assert.NotEmpty(comfy.HistoryDeletes);
+        Assert.Equal(comfy.Prompts.Count, comfy.HistoryDeletes.Count);
+    }
+
+    /// <summary>Reports on the caller's thread, so a test can act at an exact step.</summary>
+    private sealed class SyncProgress(Action<AssessmentProgress> report) : IProgress<AssessmentProgress>
+    {
+        public void Report(AssessmentProgress value) => report(value);
+    }
+
+    [Fact]
+    public async Task A_clearing_pass_mid_assessment_never_takes_the_render_the_assessment_is_waiting_on()
+    {
+        using var dir = new TempDir();
+        await using var comfy = await FakeComfy.StartAsync();
+        comfy.HonorPromptId = true;
+        string output = Directory.CreateDirectory(Path.Combine(dir.Path, "output")).FullName;
+        comfy.RenderInto = output;   // finished the moment it is taken
+        await using var runtime = Runtime(comfy, options: new NodeOptions { ComfyUrl = comfy.Url, ComfyBaseDirectory = dir.Path });
+
+        // The reconcile loop, running as often as it can. Had it been told of
+        // a prompt before the assessment saw that prompt finish, it deleted
+        // the history the assessment was polling, and the run waited out its
+        // 150 s and failed a machine that had done the work.
+        using var assessor = new Assessor(new NodeOptions { ComfyUrl = comfy.Url }, new NullLog(), runtime: runtime);
+        Task<NodeAssessment> run = assessor.RunAsync("test", null, null, CancellationToken.None);
+        using var giveUp = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        while (!run.IsCompleted && !giveUp.IsCancellationRequested)
+        {
+            await runtime.PurgeBenchmarksAsync(CancellationToken.None);
+            await Task.Delay(10);
+        }
+
+        Assert.True(run.IsCompleted, "the assessment was left waiting on a render already cleared away");
+        NodeAssessment report = await run;
+        Assert.Null(report.Failed);
+        Assert.Empty(Directory.GetFiles(output, "gpuxmine_assess_*"));
+        Assert.Equal(2, comfy.HistoryDeletes.Distinct().Count());
+    }
+
+    [Fact]
+    public async Task A_benchmark_finishing_between_the_queue_and_history_reads_is_cleared_not_given_up_on()
+    {
+        using var dir = new TempDir();
+        await using var comfy = await FakeComfy.StartAsync();
+        await using var runtime = Runtime(comfy, options: new NodeOptions { ComfyUrl = comfy.Url, ComfyBaseDirectory = dir.Path });
+        runtime.NoteBenchmark("bench-late");
+        comfy.Queue["bench-late"] = true;
+
+        // It ends — off the queue and into the history in one step, as ComfyUI
+        // does it — just as the queue is read.
+        string image = dir.File("output/gpuxmine_assess_00005_.png");
+        comfy.OnQueueRead = () =>
+        {
+            if (comfy.Queue.TryRemove("bench-late", out _)) comfy.Finished("bench-late", "gpuxmine_assess_00005_.png");
+        };
+
+        Assert.Equal(1, await runtime.PurgeBenchmarksAsync(CancellationToken.None));
+        Assert.False(File.Exists(image));
+        Assert.Contains("bench-late", comfy.HistoryDeletes);
+    }
+
+    [Fact]
+    public async Task Clearing_the_assessments_renders_deletes_only_its_own_files_and_waits_for_one_still_running()
+    {
+        using var dir = new TempDir();
+        await using var comfy = await FakeComfy.StartAsync();
+        var log = new NullLog();
+        await using var runtime = new ComfyRuntime(new NodeOptions { ComfyUrl = comfy.Url, ComfyBaseDirectory = dir.Path }, log);
+        runtime.NoteBenchmark("bench-done");
+        runtime.NoteBenchmark("bench-running");
+        runtime.NoteBenchmark("bench-odd");
+        runtime.NoteBenchmark("bench-walks-out");
+        string ours = dir.File("output/gpuxmine_assess_00003_.png");
+        string owners = dir.File("output/ComfyUI_00007_.png");
+        string outside = dir.File("gpuxmine_assess_00009_.png");
+        comfy.Finished("bench-done", "gpuxmine_assess_00003_.png");
+        comfy.Finished("bench-odd", "ComfyUI_00007_.png");   // a history naming a file that is not the benchmark's
+        comfy.Finished("bench-walks-out", "gpuxmine_assess_00009_.png", subfolder: "..");
+        comfy.Queue["bench-running"] = true;
+
+        Assert.Equal(1, await runtime.PurgeBenchmarksAsync(CancellationToken.None));
+        Assert.False(File.Exists(ours));
+        Assert.True(File.Exists(owners));
+        Assert.True(File.Exists(outside));
+        Assert.Contains("bench-done", comfy.HistoryDeletes);
+        Assert.DoesNotContain("bench-running", comfy.HistoryDeletes);
+
+        // The owner is told what was left, in Thai — once.
+        Assert.Single(log.Lines, l => l.StartsWith("WARN", StringComparison.Ordinal) && l.Contains("ลบภาพที่การประเมินเครื่องทิ้งไว้", StringComparison.Ordinal));
+
+        // It finishes after the assessment gave up on it: the next pass takes it.
+        string later = dir.File("output/gpuxmine_assess_00004_.png");
+        comfy.Queue.TryRemove("bench-running", out _);
+        comfy.Finished("bench-running", "gpuxmine_assess_00004_.png");
+        runtime.NoteBenchmark("bench-odd-again");
+        string ownersToo = dir.File("output/ComfyUI_00008_.png");
+        comfy.Finished("bench-odd-again", "ComfyUI_00008_.png");
+        Assert.Equal(1, await runtime.PurgeBenchmarksAsync(CancellationToken.None));
+        Assert.False(File.Exists(later));
+        Assert.True(File.Exists(ownersToo));
+        Assert.Contains("bench-running", comfy.HistoryDeletes);
+        Assert.Single(log.Lines, l => l.StartsWith("WARN", StringComparison.Ordinal));
+
+        // A ComfyUI that is not answering is not a failure of anything.
+        await using var offline = new ComfyRuntime(new NodeOptions { ComfyUrl = "http://127.0.0.1:9" }, new NullLog());
+        offline.NoteBenchmark("bench-offline");
+        Assert.Equal(0, await offline.PurgeBenchmarksAsync(CancellationToken.None));
+    }
+
     [Theory]
     [InlineData("", "a.png", true)]
     [InlineData("sub/dir", "a.png", true)]

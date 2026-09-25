@@ -1088,7 +1088,7 @@ public sealed partial class NodeHost : IAsyncDisposable
             // path into the UI thread.
             var steps = new Progress<AssessmentProgress>(State.SetAssessmentProgress);
 
-            using var assessor = new Assessor(Options, Log, Store, _health, steps);
+            using var assessor = new Assessor(Options, Log, Store, _health, steps, Runtime);
             AssessmentReport report = await assessor.RunAsync(
                 SelfUpdater.CurrentVersion, _hardwareHash.Value, State.Gpu.Driver, ct);
 
@@ -1175,6 +1175,11 @@ public sealed partial class NodeHost : IAsyncDisposable
             try
             {
                 await ReconcileOnceAsync(ct);
+
+                // A benchmark pass that ran out the assessment's clock finishes
+                // in ComfyUI later; its image is cleared here once it has. Free
+                // when there is none: nothing is asked of ComfyUI.
+                await Runtime.PurgeBenchmarksAsync(ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
