@@ -140,16 +140,33 @@ if (!host.Options.Validate(out string error))
 }
 
 using var stopping = new CancellationTokenSource();
+using var handOver = new CancellationTokenSource();
+int stopPresses = 0;
 Console.CancelKeyPress += (_, e) =>
 {
     e.Cancel = true;              // let the node unwind instead of being killed
-    stopping.Cancel();
+
+    // The first Ctrl+C is the owner's STOP, and a STOP hands over first: the
+    // render in progress finishes and aixman collects it before the relay
+    // closes. It used to close at once, and the job the card was halfway
+    // through was redone elsewhere and never paid. The second stops now.
+    if (Interlocked.Increment(ref stopPresses) == 1)
+    {
+        Console.WriteLine("กำลังหยุด — ทำงานที่รับไว้ให้เสร็จและส่งให้ครบก่อน · กด Ctrl+C อีกครั้งเพื่อหยุดทันที (งานที่ยังส่งไม่ครบจะไม่ได้ค่าตอบแทน)");
+        handOver.Cancel();
+    }
+    else
+    {
+        stopping.Cancel();
+    }
 };
+// The service manager or the system is ending the process, and waits a few
+// seconds at most: there is no time to hand anything over.
 AppDomain.CurrentDomain.ProcessExit += (_, _) => stopping.Cancel();
 
 host.UpdateReady += () => stopping.Cancel();
 
-await host.RunAsync(stopping.Token);
+await host.RunAsync(stopping.Token, handOver.Token);
 await host.DisposeAsync();
 
 // Applied only now, after the relay socket and the runtime are down. The new

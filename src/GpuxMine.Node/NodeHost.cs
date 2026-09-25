@@ -527,13 +527,41 @@ public sealed partial class NodeHost : IAsyncDisposable
         Log.Warn($"[net] {note}");
     }
 
-    /// <summary>Headless: start, run until cancelled, stop.</summary>
-    public async Task RunAsync(CancellationToken ct)
+    /// <summary>Headless: start, run until asked to stop, stop.</summary>
+    /// <param name="ct">Stop now. Whatever is rendering or waiting to be collected is forfeited.</param>
+    /// <param name="handOverFirst">
+    /// The headless owner's STOP — the agent's first Ctrl+C. The same drain as
+    /// the window's STOP: new work is refused at once, and the relay stays open
+    /// until what the node already took has been rendered and collected.
+    /// </param>
+    /// <remarks>
+    /// Ctrl+C used to close the relay on the spot, in the middle of a
+    /// customer's render. ComfyUI finished it on a machine aixman could no
+    /// longer reach: the customer waited out the job timeout, and the owner
+    /// was not paid for work their card had done. <paramref name="ct"/> going
+    /// off during the handover — a second Ctrl+C — still stops at once.
+    /// </remarks>
+    public async Task RunAsync(CancellationToken ct, CancellationToken handOverFirst = default)
     {
         Begin();
         await StartAsync();
-        try { await Task.Delay(Timeout.Infinite, ct); }
-        catch (OperationCanceledException) { /* asked to stop */ }
+        using (var either = CancellationTokenSource.CreateLinkedTokenSource(ct, handOverFirst))
+        {
+            try { await Task.Delay(Timeout.Infinite, either.Token); }
+            catch (OperationCanceledException) { /* asked to stop */ }
+        }
+
+        if (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                await DrainAsync("กำลังหยุดโปรแกรม — ทำงานที่รับไว้ให้เสร็จและส่งให้ครบก่อน").WaitAsync(ct);
+            }
+            catch (OperationCanceledException)
+            {
+                Log.Warn("[net] หยุดทันทีตามที่สั่ง — งานที่ยังส่งไม่ครบจะไม่ได้ค่าตอบแทน");
+            }
+        }
         await StopAsync();
     }
 

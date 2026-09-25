@@ -329,6 +329,73 @@ public class NodeHostTests
         Assert.False(host.State.Draining);
     }
 
+    [Fact]
+    public async Task The_headless_STOP_hands_the_render_over_before_it_ends()
+    {
+        using var dir = new TempDir();
+        await using var host = new NodeHost(Paired(dir));
+        host.DrainGrace = TimeSpan.FromMilliseconds(300);
+        using var now = new CancellationTokenSource();
+        using var handOver = new CancellationTokenSource();
+
+        Task running = host.RunAsync(now.Token, handOver.Token);
+        await Eventually(() => host.State.Running);
+        host.Runtime.TrackTunnelPrompt("p1");
+        host.Runtime.Consume(Http.Started("p1"));
+
+        handOver.Cancel();   // the agent's first Ctrl+C
+        await Eventually(() => host.State.Draining);
+        Assert.Equal(ReadyStage.Draining, host.Decide().Stage);
+
+        // The relay stays open while the customer's render runs.
+        await Task.Delay(600);
+        Assert.False(running.IsCompleted);
+        Assert.True(host.State.Running);
+
+        host.Runtime.Consume(Http.Succeeded("p1"));
+        await running.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.False(host.State.Running);
+        Assert.False(host.State.Draining);
+    }
+
+    [Fact]
+    public async Task A_second_headless_STOP_stops_without_waiting()
+    {
+        using var dir = new TempDir();
+        await using var host = new NodeHost(Paired(dir));
+        host.DrainGrace = TimeSpan.FromMinutes(10);
+        using var now = new CancellationTokenSource();
+        using var handOver = new CancellationTokenSource();
+
+        Task running = host.RunAsync(now.Token, handOver.Token);
+        await Eventually(() => host.State.Running);
+        host.Runtime.TrackTunnelPrompt("p1");
+        host.Runtime.Consume(Http.Started("p1"));
+
+        handOver.Cancel();
+        await Eventually(() => host.State.Draining);
+        now.Cancel();        // the second Ctrl+C
+
+        await running.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.False(host.State.Running);
+        Assert.False(host.State.Draining);
+    }
+
+    [Fact]
+    public async Task The_headless_STOP_with_nothing_in_flight_stops_at_once()
+    {
+        using var dir = new TempDir();
+        await using var host = new NodeHost(Paired(dir));
+        using var handOver = new CancellationTokenSource();
+
+        Task running = host.RunAsync(CancellationToken.None, handOver.Token);
+        await Eventually(() => host.State.Running);
+
+        handOver.Cancel();
+        await running.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(host.State.Running);
+    }
+
     // ---------------------------------------------- owner's settings gate
 
     [Fact]
