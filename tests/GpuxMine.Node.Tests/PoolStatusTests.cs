@@ -960,22 +960,31 @@ public class PoolStatusTests
     }
 
     [Fact]
-    public async Task A_worker_disabled_only_at_the_relay_is_not_knocked_on_at_every_status_call()
+    public async Task A_short_suspension_the_status_call_never_saw_still_ends_at_the_next_call()
     {
         using var dir = new TempDir();
         await using var studio = await FakeStudio.StartAsync();
         await using var relay = await DisablingRelay.StartAsync();
-        studio.Body = Answer();   // XMAN Studio has nothing against it: an operator disabled it at the relay
+        studio.Body = Answer();   // suspended and resumed between two status calls
         await using var host = new NodeHost(Paired(dir, studio.Url) with { RelayUrl = relay.AgentUrl });
 
         await host.OwnerStartAsync();
         await Eventually(() => relay.Attempts == 1 && host.State.Connection == ConnectionState.Rejected);
-        await host.PollPoolStatusOnceAsync(CancellationToken.None);
-        await host.PollPoolStatusOnceAsync(CancellationToken.None);
-        await Task.Delay(500);
 
-        Assert.Equal(1, relay.Attempts);
-        Assert.Equal(ConnectionState.Rejected, host.State.Connection);
+        // The relay has not caught up yet: one knock for the status call, not a loop.
+        await host.PollPoolStatusOnceAsync(CancellationToken.None);
+        await Eventually(() => relay.Attempts == 2);
+        await Task.Delay(600);
+        Assert.Equal(2, relay.Attempts);
+
+        relay.Refuse = false;   // sync-nodes has enabled the worker again
+        await host.PollPoolStatusOnceAsync(CancellationToken.None);
+        await Eventually(() => relay.Attempts == 3 && host.State.Connection == ConnectionState.Connected);
+
+        // Connected, a status call has nothing to cut short.
+        await host.PollPoolStatusOnceAsync(CancellationToken.None);
+        await Task.Delay(300);
+        Assert.Equal(3, relay.Attempts);
     }
 
     [Fact]

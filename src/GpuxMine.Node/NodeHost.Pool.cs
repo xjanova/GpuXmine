@@ -217,20 +217,31 @@ public sealed partial class NodeHost
     private bool _poolSawSuspended;
 
     /// <summary>
-    /// A suspension lifted at XMAN Studio reaches the relay connection at
-    /// once, instead of when its wait after the relay's 403 runs out.
+    /// A connection waiting out the relay's 403 while XMAN Studio says the
+    /// machine is not suspended tries again now, instead of when the wait runs
+    /// out — five minutes after the first refusal, doubling to half an hour.
     /// </summary>
     /// <remarks>
-    /// Only on the change from suspended to not: a worker an operator disabled
-    /// at the relay directly is not suspended at XMAN Studio either, and must
-    /// not be knocked on every few minutes because of that.
+    /// <para>
+    /// A machine resumed by an administrator used to stay off the relay, with
+    /// no work, for up to that long while every page said it was fine.
+    /// </para>
+    /// <para>
+    /// XMAN Studio is where a suspension lives, and the relay's gate follows it:
+    /// gpuxmine:sync-nodes enables, every minute, a worker XMAN Studio has not
+    /// suspended. So its "not suspended" is worth one more knock — at most one
+    /// per status call, which is every three minutes, and only while the relay
+    /// is still saying 403.
+    /// </para>
     /// </remarks>
     private void NoteSuspension(bool suspended)
     {
         bool lifted = _poolSawSuspended && !suspended;
         _poolSawSuspended = suspended;
-        if (lifted && _connection?.RetryDisabledNow() == true)
-            Log.Info("[pool] ผู้ดูแลยกเลิกการระงับเครื่องนี้แล้ว — กลับมาเชื่อมต่อ relay");
+        if (suspended || _connection?.RetryDisabledNow() != true) return;
+        Log.Info(lifted
+            ? "[pool] ผู้ดูแลยกเลิกการระงับเครื่องนี้แล้ว — กลับมาเชื่อมต่อ relay"
+            : "[pool] XMAN Studio ไม่ได้ระงับเครื่องนี้ แต่ relay ยังไม่ให้เข้า — ลองเชื่อมต่อใหม่");
     }
 
     private bool SameIdentity(string workerId, string token) =>
