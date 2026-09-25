@@ -121,21 +121,32 @@ public sealed class TrayIcon : IDisposable
     /// be lost.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Quitting does not touch the remembered switch: the owner closed the
     /// program, they did not decide to stop sharing, and the next launch picks
     /// up where this one left off.
+    /// </para>
+    /// <para>
+    /// "A job on the machine" is the host's own handover check, the one a
+    /// drain waits on — not only a render running. A render that finished a
+    /// few seconds ago has not been collected yet, and quitting then closed the
+    /// relay under aixman's download: the plain "quit?" question, and a
+    /// finished job nobody was paid for.
+    /// </para>
     /// </remarks>
     private async void Quit()
     {
         if (_quitting) return;
 
-        bool working = _host.State.Running && (_host.Runtime.IsWorking || _host.State.Draining);
+        string? undelivered = _host.State.Running ? _host.UndeliveredWork : null;
+        bool working = _host.State.Running && (undelivered is not null || _host.State.Draining);
         if (working)
         {
+            string what = undelivered ?? _host.State.DrainNote ?? "กำลังส่งงานที่รับไว้";
             var answer = System.Windows.MessageBox.Show(
-                "เครื่องกำลังทำงานของลูกค้าอยู่\n\n"
-                + "ใช่ — ทำงานนี้ให้เสร็จและส่งให้ลูกค้าก่อน แล้วค่อยปิดโปรแกรมเอง (แนะนำ ได้รับค่าตอบแทนตามปกติ)\n"
-                + "ไม่ — ปิดทันที งานนี้จะไม่เสร็จและไม่ได้รับค่าตอบแทน\n"
+                $"งานของลูกค้ายังส่งไม่ครบ — {what}\n\n"
+                + "ใช่ — ส่งงานให้ลูกค้าให้ครบก่อน แล้วค่อยปิดโปรแกรมเอง (แนะนำ ได้รับค่าตอบแทนตามปกติ)\n"
+                + "ไม่ — ปิดทันที งานนี้จะส่งไม่ถึงลูกค้าและไม่ได้รับค่าตอบแทน\n"
                 + "ยกเลิก — ไม่ปิด",
                 "ออกจากโปรแกรม", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
 

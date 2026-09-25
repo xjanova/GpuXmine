@@ -253,6 +253,53 @@ public class NodeHostTests
     }
 
     [Fact]
+    public async Task A_purge_of_an_older_job_does_not_end_a_stop_early()
+    {
+        using var dir = new TempDir();
+        await using var comfy = await FakeComfy.StartAsync();
+        await using var host = await SharingHost(dir, comfy);
+        host.DrainGrace = TimeSpan.FromMinutes(10);
+        host.Store.JobSubmitted("six-hours-old", "image", 4, false);
+        host.Store.JobFinished("six-hours-old", true, "aix_00001_.png", null);
+        comfy.Finished("six-hours-old", "aix_00001_.png");
+
+        string promptId = Http.Body(await Tunnel(host, "POST", "/prompt", Http.ImagePrompt()))["prompt_id"]!.GetValue<string>();
+        host.Runtime.Consume(Http.Started(promptId));
+        host.Runtime.Consume(Http.Succeeded(promptId));
+        comfy.Finished(promptId, "aix_00002_.png");
+
+        Task stopping = host.OwnerStopAsync();
+        // Seconds after the render: the node's own fallback, and aixman retrying an older purge.
+        await host.Runtime.PurgeAsync("six-hours-old", CancellationToken.None);
+        Assert.Equal(200, (await Tunnel(host, "POST", "/aixman/purge", Http.Json(new { prompt_id = "six-hours-old" }))).Status);
+        await Task.Delay(800);
+        Assert.True(host.State.Running);   // the new result has still not been collected
+
+        Assert.Equal(200, (await Tunnel(host, "POST", "/aixman/purge", Http.Json(new { prompt_id = promptId }))).Status);
+        await stopping.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(host.State.Running);
+    }
+
+    [Fact]
+    public async Task Undelivered_work_includes_a_result_aixman_has_not_collected()
+    {
+        using var dir = new TempDir();
+        await using var host = new NodeHost(Paired(dir));
+        host.DrainGrace = TimeSpan.FromMinutes(10);
+        await host.OwnerStartAsync();
+        Assert.Null(host.UndeliveredWork);
+
+        host.Runtime.TrackTunnelPrompt("p1");
+        host.Runtime.Consume(Http.Started("p1"));
+        Assert.Contains("เรนเดอร์", host.UndeliveredWork);
+
+        // Finished, and not rendering any more — which is all the tray used to ask.
+        host.Runtime.Consume(Http.Succeeded("p1"));
+        Assert.False(host.Runtime.IsWorking);
+        Assert.Contains("รอ pool เก็บผลงาน", host.UndeliveredWork);
+    }
+
+    [Fact]
     public async Task Stop_now_forfeits_and_closes_at_once()
     {
         using var dir = new TempDir();
@@ -561,6 +608,133 @@ public class NodeHostTests
         Assert.True(host.State.Running);
         Assert.True(host.Settings.SharingEnabled);
         Assert.True(File.Exists(NodeIdentityFile.PathIn(dir.Path)));
+    }
+
+    /// <summary>XMAN Studio's claim endpoint, answering with a new identity after <paramref name="delay"/>.</summary>
+    private static async Task<WebApplication> StartStudioAsync(TimeSpan delay)
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseUrls("http://127.0.0.1:0");
+        builder.Logging.ClearProviders();
+        var studio = builder.Build();
+        studio.MapPost("/api/v1/product/gpuxmine/claim", async () =>
+        {
+            await Task.Delay(delay);
+            return Results.Json(new
+            {
+                success = true,
+                message = "ok",
+                data = new { worker_id = "gxm-new", token = "new-token", relay_url = ClosedRelay },
+            });
+        });
+        await studio.StartAsync();
+        return studio;
+    }
+
+    /// <summary>A relay that accepts the node's socket and never sends it anything: "connected", and nothing more.</summary>
+    private static async Task<(WebApplication App, string AgentUrl)> StartQuietRelayAsync()
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseUrls("http://127.0.0.1:0");
+        builder.Logging.ClearProviders();
+        var relay = builder.Build();
+        relay.UseWebSockets();
+        relay.Map("/agent", async (HttpContext context) =>
+        {
+            if (!context.WebSockets.IsWebSocketRequest) { context.Response.StatusCode = 400; return; }
+            using var socket = await context.WebSockets.AcceptWebSocketAsync();
+            var buffer = new byte[64 * 1024];
+            try
+            {
+                while (socket.State == System.Net.WebSockets.WebSocketState.Open)
+                {
+                    var read = await socket.ReceiveAsync(buffer, context.RequestAborted);
+                    if (read.MessageType == System.Net.WebSockets.WebSocketMessageType.Close) break;
+                }
+            }
+            catch (Exception)
+            {
+                // The node went away.
+            }
+        });
+        await relay.StartAsync();
+        return (relay, relay.Urls.First().Replace("http://", "ws://", StringComparison.Ordinal) + "/agent");
+    }
+
+    [Fact]
+    public async Task Pairing_takes_no_new_work_while_the_code_is_being_claimed()
+    {
+        using var dir = new TempDir();
+        await using var comfy = await FakeComfy.StartAsync();
+        await using var studio = await StartStudioAsync(TimeSpan.FromMilliseconds(800));
+        await using var host = new NodeHost(Paired(dir, comfy.Url) with { XmanStudioUrl = studio.Urls.First() });
+        host.UseAssessment(UsableReport("image"));
+        await host.OwnerStartAsync();
+        Assert.True(host.Decide().Accept);
+
+        Task<(bool Ok, string Message)> pairing = host.PairAsync("ABCD1234");
+        await Task.Delay(250);
+
+        AcceptDecision during = host.Decide();
+        Assert.False(during.Accept);
+        Assert.Equal(ReadyStage.Draining, during.Stage);
+        LocalReply prompt = await Tunnel(host, "POST", "/prompt", Http.ImagePrompt());
+        Assert.Equal(503, prompt.Status);
+        Assert.Equal(ReadyStage.Draining, Http.Body(prompt)["stage"]!.GetValue<string>());
+        Assert.False(comfy.Reached("POST /prompt"));
+
+        var (ok, _) = await pairing.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.True(ok);
+        Assert.Equal("gxm-new", host.Options.WorkerId);
+        Assert.True(host.Decide().Accept);
+    }
+
+    [Fact]
+    public async Task A_failed_claim_lets_the_node_take_work_again()
+    {
+        using var dir = new TempDir();
+        await using var comfy = await FakeComfy.StartAsync();
+        await using var host = new NodeHost(Paired(dir, comfy.Url));   // XMAN Studio on a closed port
+        host.UseAssessment(UsableReport("image"));
+        await host.OwnerStartAsync();
+
+        var (ok, _) = await host.PairAsync("ABCD1234");
+
+        Assert.False(ok);
+        Assert.Equal("gxm-test", host.Options.WorkerId);
+        Assert.True(host.Decide().Accept);
+    }
+
+    [Fact]
+    public async Task Pairing_waits_for_the_old_identitys_last_result_to_be_collected()
+    {
+        using var dir = new TempDir();
+        await using var comfy = await FakeComfy.StartAsync();
+        await using var studio = await StartStudioAsync(TimeSpan.Zero);
+        var (relay, agentUrl) = await StartQuietRelayAsync();
+        await using var _ = relay;
+        await using var host = new NodeHost(Paired(dir, comfy.Url) with { XmanStudioUrl = studio.Urls.First(), RelayUrl = agentUrl });
+        host.DrainGrace = TimeSpan.FromMinutes(10);
+        host.UseAssessment(UsableReport("image"));
+        await host.OwnerStartAsync();
+        await Eventually(() => host.State.Connection == ConnectionState.Connected);
+
+        // A render that ended a moment ago, which aixman has not fetched yet.
+        host.Runtime.TrackTunnelPrompt("p1");
+        host.Runtime.Consume(Http.Started("p1"));
+        host.Runtime.Consume(Http.Succeeded("p1"));
+        comfy.Finished("p1", "aix_00001_.png");
+
+        Task<(bool Ok, string Message)> pairing = host.PairAsync("ABCD1234");
+        await Task.Delay(700);
+        Assert.False(pairing.IsCompleted);
+        Assert.Equal("gxm-test", host.Options.WorkerId);   // the old session is still up for aixman
+
+        Assert.Equal(200, (await Tunnel(host, "POST", "/aixman/purge", Http.Json(new { prompt_id = "p1" }))).Status);
+        var (ok, _) = await pairing.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.True(ok);
+        Assert.Equal("gxm-new", host.Options.WorkerId);
     }
 
     [Fact]

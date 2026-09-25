@@ -65,6 +65,13 @@ public sealed partial class NodeHost : IAsyncDisposable
     /// </summary>
     internal TimeSpan DrainLimit { get; set; } = TimeSpan.FromMinutes(45);
 
+    /// <summary>
+    /// The longest a new pairing waits for the old identity's last result to
+    /// be collected. A render is never among what it waits for — pairing is
+    /// refused while one runs — only a result, and replies on their way.
+    /// </summary>
+    internal TimeSpan PairHandoverLimit { get; set; } = TimeSpan.FromMinutes(2);
+
     /// <summary>The ledger setting that remembers when this build first ran, which bounds the purge fallback.</summary>
     private const string PurgeSinceKey = "purge-fallback-since";
 
@@ -95,6 +102,9 @@ public sealed partial class NodeHost : IAsyncDisposable
     private Task? _drainTask;
     private volatile bool _draining;
     private volatile string? _drainReason;
+
+    /// <summary>A pairing code is being exchanged: no new work, because the identity it would belong to is on its way out.</summary>
+    private volatile bool _pairing;
 
     private MockComfy? _mock;
     private DateTimeOffset _lastUserInput = DateTimeOffset.MinValue;
@@ -459,7 +469,7 @@ public sealed partial class NodeHost : IAsyncDisposable
                     // Only while still in charge: a START in between has
                     // already cleared the flag, and must not see it come back.
                     if (!ReferenceEquals(_drainCts, cts)) return;
-                    State.SetDraining(true, waiting);
+                    State.SetDraining(true, $"กำลังหยุดแชร์ — {waiting}");
                 }
                 await Task.Delay(DrainPoll, cts.Token);
             }
@@ -481,19 +491,32 @@ public sealed partial class NodeHost : IAsyncDisposable
     private string? HandoverPending()
     {
         if (Runtime.IsWorking)
-            return "กำลังหยุดแชร์ — รอให้งานที่รับไว้เรนเดอร์เสร็จ";
+            return "รอให้งานที่รับไว้เรนเดอร์เสร็จ";
 
         if ((_connection?.InFlight ?? 0) > 0)
-            return "กำลังหยุดแชร์ — กำลังส่งผลงานให้ pool";
+            return "กำลังส่งผลงานให้ pool";
 
         // aixman purging the job is aixman saying it has the result; only an
         // aixman that predates purge leaves the node to wait out the grace.
         TimeSpan since = DateTimeOffset.UtcNow - Runtime.LastTunnelFinishedAt;
         if (since < DrainGrace && !Runtime.CollectedSinceLastFinish)
-            return $"กำลังหยุดแชร์ — รอ pool เก็บผลงานที่เพิ่งเสร็จ (อีก {(DrainGrace - since).TotalSeconds:0} วินาที)";
+            return $"รอ pool เก็บผลงานที่เพิ่งเสร็จ (อีก {(DrainGrace - since).TotalSeconds:0} วินาที)";
 
         return null;
     }
+
+    /// <summary>
+    /// What closing the relay this second would cut off, in the owner's words
+    /// — a render, a reply on its way, a result aixman has not collected yet —
+    /// or null when nothing would be lost.
+    /// </summary>
+    /// <remarks>
+    /// Wider than <see cref="ComfyRuntime.IsWorking"/>, which only sees the
+    /// render. Anything about to close the session outright — quitting, a new
+    /// identity — asks this, not that: a render that finished ten seconds ago
+    /// is still the customer's until aixman has fetched it.
+    /// </remarks>
+    public string? UndeliveredWork => HandoverPending();
 
     private void OnRelayRefused(int status)
     {
@@ -540,6 +563,10 @@ public sealed partial class NodeHost : IAsyncDisposable
         // STOP pressed with work still to hand over. Said as its own stage so
         // aixman can tell "going away" from "back in a minute".
         if (_draining) return new AcceptDecision(false, _drainReason ?? "กำลังหยุดแชร์", ReadyStage.Draining);
+
+        // The identity is being replaced. Work taken now would belong to a
+        // worker that is about to disappear — the same going-away as a STOP.
+        if (_pairing) return new AcceptDecision(false, "กำลังลงทะเบียนเครื่องใหม่ — ส่งงานที่รับไว้ให้ครบก่อน", ReadyStage.Draining);
 
         // The benchmark has the card. Taking a job on top of it would both slow
         // the render and measure the machine as slower than it is.
@@ -779,6 +806,14 @@ public sealed partial class NodeHost : IAsyncDisposable
     /// out mid-render would leave that job with nobody to deliver it.
     /// </para>
     /// <para>
+    /// New work is refused from before that check until the new session is
+    /// up (stage <c>draining</c>), because the claim is a network call and the
+    /// old session keeps answering aixman while it runs. It used to be taken
+    /// the whole time, then cut off mid-render by the switch. Once the claim
+    /// has succeeded, a result aixman has not yet collected and replies still
+    /// on their way are waited for, not closed on.
+    /// </para>
+    /// <para>
     /// Pairing is the owner saying "share this machine", so the switch is
     /// turned on and remembered.
     /// </para>
@@ -789,57 +824,115 @@ public sealed partial class NodeHost : IAsyncDisposable
         if (code.Length < 8)
             return (false, "รหัสจับคู่ต้องมี 8 ตัวอักษร");
 
-        if (Runtime.IsWorking)
-            return (false, "เครื่องกำลังทำงานของลูกค้าอยู่ — รอให้เสร็จก่อนแล้วค่อยลงทะเบียนใหม่ (รหัสยังไม่ถูกใช้)");
-
-        Log.Info("[net] กำลังลงทะเบียนเครื่องกับ XMAN Studio");
-
-        NodeCredentials credentials = await _studio.ClaimAsync(code, SelfUpdater.CurrentVersion, ct);
-
-        if (!credentials.Ok || credentials.WorkerId is null || credentials.Token is null)
-        {
-            Log.Warn($"[net] ลงทะเบียนไม่สำเร็จ: {credentials.Message}");
-            return (false, credentials.Message ?? "ลงทะเบียนไม่สำเร็จ");
-        }
-
+        // Raised before the look at the runtime, not after: a submission
+        // checks it once more after reserving the card, so nothing can be
+        // accepted between this line and the next without the next seeing it.
+        _pairing = true;
+        bool replaced = false;
+        string message;
         try
         {
-            NodeIdentityFile.Save(Options.DataDirectory, credentials.WorkerId, credentials.Token, credentials.RelayUrl);
+            if (Runtime.IsWorking)
+                return (false, "เครื่องกำลังทำงานของลูกค้าอยู่ — รอให้เสร็จก่อนแล้วค่อยลงทะเบียนใหม่ (รหัสยังไม่ถูกใช้)");
+
+            Reevaluate();
+            Log.Info("[net] กำลังลงทะเบียนเครื่องกับ XMAN Studio");
+
+            NodeCredentials credentials = await _studio.ClaimAsync(code, SelfUpdater.CurrentVersion, ct);
+
+            if (!credentials.Ok || credentials.WorkerId is null || credentials.Token is null)
+            {
+                Log.Warn($"[net] ลงทะเบียนไม่สำเร็จ: {credentials.Message}");
+                return (false, credentials.Message ?? "ลงทะเบียนไม่สำเร็จ");
+            }
+
+            try
+            {
+                NodeIdentityFile.Save(Options.DataDirectory, credentials.WorkerId, credentials.Token, credentials.RelayUrl);
+            }
+            catch (Exception ex)
+            {
+                // The pairing code has been spent by now, so this is worth saying
+                // loudly: the owner has to ask for a new one.
+                Log.Warn($"[net] เขียนไฟล์ตั้งค่าไม่ได้: {ex.Message}");
+                return (false, $"ลงทะเบียนสำเร็จแต่บันทึกลงเครื่องไม่ได้: {ex.Message} — กรุณาขอรหัสใหม่");
+            }
+
+            string relay = string.IsNullOrWhiteSpace(credentials.RelayUrl) ? Options.RelayUrl : credentials.RelayUrl;
+            Remember(credentials.WorkerId, credentials.Token, relay);
+
+            Log.Info($"[net] ลงทะเบียนเครื่องสำเร็จ — worker {credentials.WorkerId}"
+                     + (credentials.Owner is null ? "" : $" ของ {credentials.Owner}"));
+
+            // A session under the old identity belongs to a worker that is
+            // being replaced — and one refused by the relay is exactly what
+            // re-pairing is for. What it still owes aixman goes first.
+            await HandOverBeforeReplacingAsync(ct);
+            await StopAsync();
+            Options = Options with
+            {
+                WorkerId = credentials.WorkerId,
+                Token = credentials.Token,
+                RelayUrl = relay,
+                IdentityRescuedFrom = null,
+            };
+            // What the website said about the old identity — a refusal, most
+            // likely, since that is what sends an owner to re-pair — is not
+            // about this one.
+            ForgetPool();
+            replaced = true;
+            message = credentials.Message ?? "ลงทะเบียนเรียบร้อย";
         }
-        catch (Exception ex)
+        finally
         {
-            // The pairing code has been spent by now, so this is worth saying
-            // loudly: the owner has to ask for a new one.
-            Log.Warn($"[net] เขียนไฟล์ตั้งค่าไม่ได้: {ex.Message}");
-            return (false, $"ลงทะเบียนสำเร็จแต่บันทึกลงเครื่องไม่ได้: {ex.Message} — กรุณาขอรหัสใหม่");
+            _pairing = false;
+            if (!replaced) Reevaluate();
         }
-
-        string relay = string.IsNullOrWhiteSpace(credentials.RelayUrl) ? Options.RelayUrl : credentials.RelayUrl;
-        Remember(credentials.WorkerId, credentials.Token, relay);
-
-        Log.Info($"[net] ลงทะเบียนเครื่องสำเร็จ — worker {credentials.WorkerId}"
-                 + (credentials.Owner is null ? "" : $" ของ {credentials.Owner}"));
-
-        // A session under the old identity belongs to a worker that is being
-        // replaced — and one refused by the relay is exactly what re-pairing
-        // is for. Closed outright: nothing is in flight (checked above).
-        await StopAsync();
-        Options = Options with
-        {
-            WorkerId = credentials.WorkerId,
-            Token = credentials.Token,
-            RelayUrl = relay,
-            IdentityRescuedFrom = null,
-        };
-        // What the website said about the old identity — a refusal, most
-        // likely, since that is what sends an owner to re-pair — is not
-        // about this one.
-        ForgetPool();
 
         RememberSharing(true);
         await StartAsync();
 
-        return (true, credentials.Message ?? "ลงทะเบียนเรียบร้อย");
+        return (true, message);
+    }
+
+    /// <summary>
+    /// Waits, bounded, until the session under the old identity owes aixman
+    /// nothing: no reply on its way, no result left uncollected.
+    /// </summary>
+    /// <remarks>
+    /// Only while that session is connected: a node the relay refused, or one
+    /// still dialling, cannot be collected from, and waiting would only keep
+    /// the owner looking at "กำลังลงทะเบียน…".
+    /// </remarks>
+    private async Task HandOverBeforeReplacingAsync(CancellationToken ct)
+    {
+        DateTimeOffset began = DateTimeOffset.UtcNow;
+        bool said = false;
+        while (true)
+        {
+            bool sharing;
+            lock (_sessionGate) sharing = _sessionCts is not null;
+            if (!sharing || State.Connection != ConnectionState.Connected) return;
+
+            string? waiting = HandoverPending();
+            if (waiting is null) return;
+
+            if (DateTimeOffset.UtcNow - began > PairHandoverLimit)
+            {
+                Log.Warn($"[net] เปลี่ยนตัวตนเครื่องโดยไม่รอต่อ — {waiting}");
+                return;
+            }
+            if (!said)
+            {
+                Log.Info($"[net] รอส่งงานของตัวตนเดิมให้ครบก่อนเปลี่ยน — {waiting}");
+                said = true;
+            }
+
+            // Cancelled or not, the identity has been claimed and saved: it is
+            // applied either way, only sooner.
+            try { await Task.Delay(DrainPoll, ct); }
+            catch (OperationCanceledException) { return; }
+        }
     }
 
     // ------------------------------------------------------------- assessment
