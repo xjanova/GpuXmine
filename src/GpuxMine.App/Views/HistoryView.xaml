@@ -24,9 +24,13 @@
                     <TextBlock Text="เวลาที่การ์ดทำงาน" Style="{StaticResource LcdLabelText}"/>
                     <TextBlock Text="{Binding HistoryBusyText}" Style="{StaticResource LcdValue}" FontSize="20"/>
                 </StackPanel>
+                <!-- ยอดที่ pool ตัดแล้วจริง ไม่ใช่ยอดที่เข้ากระเป๋าแล้ว — สถานะรายงานแยกทีละงานในคอลัมน์ POOL
+                     และยอดในกระเป๋าอยู่หน้า Wallet -->
                 <StackPanel Grid.Column="3">
-                    <TextBlock Text="ได้รับรวม" Style="{StaticResource LcdLabelText}"/>
+                    <TextBlock Text="ค่าตอบแทนที่ตัดยอดแล้ว" Style="{StaticResource LcdLabelText}"/>
                     <TextBlock Text="{Binding HistoryPayoutText}" Style="{StaticResource LcdValueGreen}" FontSize="20"/>
+                    <TextBlock Text="{Binding HistoryPayoutNote}" Style="{StaticResource LcdLabelText}" Typography.Capitals="Normal" FontSize="9.5"
+                               Foreground="{StaticResource LcdDim}" TextWrapping="Wrap"/>
                 </StackPanel>
             </Grid>
         </Border>
@@ -51,7 +55,7 @@
             <DockPanel>
                 <Border DockPanel.Dock="Top" Background="{StaticResource MenuBar}" BorderBrush="{StaticResource ChromeBorderLight}" BorderThickness="0,0,0,1" Height="30" CornerRadius="9,9,0,0" Padding="14,0">
                     <Grid VerticalAlignment="Center">
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="80"/><ColumnDefinition Width="70"/><ColumnDefinition Width="105"/><ColumnDefinition Width="110"/><ColumnDefinition Width="*"/><ColumnDefinition Width="80"/><ColumnDefinition Width="90"/><ColumnDefinition Width="80"/></Grid.ColumnDefinitions>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="80"/><ColumnDefinition Width="70"/><ColumnDefinition Width="105"/><ColumnDefinition Width="100"/><ColumnDefinition Width="*"/><ColumnDefinition Width="72"/><ColumnDefinition Width="92"/><ColumnDefinition Width="104"/><ColumnDefinition Width="72"/></Grid.ColumnDefinitions>
                         <TextBlock Grid.Column="0" Text="DATE" Style="{StaticResource SectionLabel}" Margin="0"/>
                         <TextBlock Grid.Column="1" Text="TIME" Style="{StaticResource SectionLabel}" Margin="0"/>
                         <TextBlock Grid.Column="2" Text="JOB ID" Style="{StaticResource SectionLabel}" Margin="0"/>
@@ -59,7 +63,8 @@
                         <TextBlock Grid.Column="4" Text="OUTPUT" Style="{StaticResource SectionLabel}" Margin="0"/>
                         <TextBlock Grid.Column="5" Text="DURATION" Style="{StaticResource SectionLabel}" Margin="0"/>
                         <TextBlock Grid.Column="6" Text="PAYOUT" Style="{StaticResource SectionLabel}" Margin="0"/>
-                        <TextBlock Grid.Column="7" Text="STATUS" Style="{StaticResource SectionLabel}" Margin="0"/>
+                        <TextBlock Grid.Column="7" Text="POOL" Style="{StaticResource SectionLabel}" Margin="0"/>
+                        <TextBlock Grid.Column="8" Text="STATUS" Style="{StaticResource SectionLabel}" Margin="0"/>
                     </Grid>
                 </Border>
 
@@ -94,15 +99,42 @@
                                         </Style>
                                     </Border.Style>
                                     <Grid VerticalAlignment="Center">
-                                        <Grid.ColumnDefinitions><ColumnDefinition Width="80"/><ColumnDefinition Width="70"/><ColumnDefinition Width="105"/><ColumnDefinition Width="110"/><ColumnDefinition Width="*"/><ColumnDefinition Width="80"/><ColumnDefinition Width="90"/><ColumnDefinition Width="80"/></Grid.ColumnDefinitions>
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="80"/><ColumnDefinition Width="70"/><ColumnDefinition Width="105"/><ColumnDefinition Width="100"/><ColumnDefinition Width="*"/><ColumnDefinition Width="72"/><ColumnDefinition Width="92"/><ColumnDefinition Width="104"/><ColumnDefinition Width="72"/></Grid.ColumnDefinitions>
                                         <TextBlock Grid.Column="0" Text="{Binding Day}" Style="{StaticResource Mono}" FontSize="11" VerticalAlignment="Center"/>
                                         <TextBlock Grid.Column="1" Text="{Binding When}" Style="{StaticResource Mono}" FontSize="11" VerticalAlignment="Center"/>
                                         <TextBlock Grid.Column="2" Text="{Binding Id}" Style="{StaticResource Mono}" FontSize="11" VerticalAlignment="Center"/>
                                         <TextBlock Grid.Column="3" Text="{Binding Task}" Style="{StaticResource Body}" VerticalAlignment="Center"/>
                                         <TextBlock Grid.Column="4" Text="{Binding Output}" Style="{StaticResource Muted}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
                                         <TextBlock Grid.Column="5" Text="{Binding Duration}" Style="{StaticResource Mono}" FontSize="11" VerticalAlignment="Center"/>
-                                        <TextBlock Grid.Column="6" Text="{Binding Payout}" Style="{StaticResource Mono}" FontSize="11" VerticalAlignment="Center"/>
-                                        <TextBlock Grid.Column="7" Text="{Binding Status}" FontSize="10.5" VerticalAlignment="Center">
+                                        <TextBlock Grid.Column="6" Text="{Binding Payout}" FontSize="11" VerticalAlignment="Center" TextTrimming="CharacterEllipsis">
+                                            <TextBlock.Style>
+                                                <!-- A voided payout is shown, struck through: the owner should see
+                                                     what was taken back, not have it quietly vanish. -->
+                                                <Style TargetType="TextBlock" BasedOn="{StaticResource Mono}">
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsVoid}" Value="True">
+                                                            <Setter Property="TextDecorations" Value="Strikethrough"/>
+                                                            <Setter Property="Foreground" Value="{StaticResource InkMuted}"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                        <TextBlock Grid.Column="7" Text="{Binding PoolStatus}" FontSize="10.5" VerticalAlignment="Center" TextTrimming="CharacterEllipsis">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock" BasedOn="{StaticResource Muted}">
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsPaid}" Value="True">
+                                                            <Setter Property="Foreground" Value="{StaticResource GreenDark}"/>
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding IsVoid}" Value="True">
+                                                            <Setter Property="Foreground" Value="{StaticResource RedDark}"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                        <TextBlock Grid.Column="8" Text="{Binding Status}" FontSize="10.5" VerticalAlignment="Center">
                                             <TextBlock.Style>
                                                 <Style TargetType="TextBlock" BasedOn="{StaticResource Mono}">
                                                     <Setter Property="Foreground" Value="{StaticResource GreenDark}"/>

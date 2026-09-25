@@ -318,6 +318,18 @@ public sealed class NodeStore : IDisposable
             //                for the job, so they can be purged with it
             EnsureColumn(connection, "jobs", "purged_at", "INTEGER");
             EnsureColumn(connection, "jobs", "input_files", "TEXT");
+
+            // What the pool settled the job at, from XMAN Studio (contract C6):
+            //   payout_status   pending | review | cleared | paid | void — where
+            //                   payout_satang is on its way to the wallet; NULL
+            //                   until the pool has settled the job at all
+            //   donated_satang  what a free-share job would have paid
+            //   pool_job_id     the pool's own id for the job, for a support ticket
+            //   settled_at      unix ms of the last change the website reported
+            EnsureColumn(connection, "jobs", "payout_status", "TEXT");
+            EnsureColumn(connection, "jobs", "donated_satang", "INTEGER");
+            EnsureColumn(connection, "jobs", "pool_job_id", "TEXT");
+            EnsureColumn(connection, "jobs", "settled_at", "INTEGER");
         }
     }
 
@@ -416,17 +428,62 @@ public sealed class NodeStore : IDisposable
         }
     }
 
-    /// <summary>Recorded when the pool settles the job. Integer satang — the value the pool sent, not a local guess.</summary>
-    public void JobSettled(string promptId, long payoutSatang)
+    /// <summary>The settlement states XMAN Studio reports, in the order a job moves through them.</summary>
+    public static readonly IReadOnlySet<string> PayoutStatuses =
+        new HashSet<string>(["pending", "review", "cleared", "paid", "void"], StringComparer.Ordinal);
+
+    /// <summary>
+    /// Records what the pool settled a job at. Integer satang — the value the
+    /// pool sent, never a local guess.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Called on every status poll with the same fifty jobs, so it writes only
+    /// what changed and says whether it did: the caller tells the owner about a
+    /// job being settled or reaching the wallet once, not every three minutes.
+    /// </para>
+    /// <para>
+    /// A prompt id this ledger does not hold — swept past retention, or from
+    /// before a reinstall — is ignored. The website is the authority for the
+    /// money; this table only mirrors it for this machine's own jobs.
+    /// </para>
+    /// </remarks>
+    /// <param name="status">pending · review · cleared · paid · void. Anything else is stored as null (unknown).</param>
+    /// <returns>True when the row existed and something about its settlement changed.</returns>
+    public bool JobSettled(string promptId, long payoutSatang, string? status = null, long donatedSatang = 0, string? poolJobId = null)
     {
+        if (string.IsNullOrEmpty(promptId)) return false;
+
+        string? known = status is not null && PayoutStatuses.Contains(status.Trim().ToLowerInvariant())
+            ? status.Trim().ToLowerInvariant()
+            : null;
+        string? jobId = string.IsNullOrWhiteSpace(poolJobId) ? null : poolJobId.Trim()[..Math.Min(poolJobId.Trim().Length, 96)];
+
         lock (_writeGate)
         {
             using var connection = Open();
             using var command = connection.CreateCommand();
-            command.CommandText = "UPDATE jobs SET payout_satang = $p WHERE prompt_id = $id";
+            // IS NOT compares NULLs as values, so "no change" really is no write.
+            command.CommandText = """
+                UPDATE jobs
+                   SET payout_satang  = $p,
+                       payout_status  = $s,
+                       donated_satang = $d,
+                       pool_job_id    = COALESCE($j, pool_job_id),
+                       settled_at     = $at
+                 WHERE prompt_id = $id
+                   AND (payout_satang  IS NOT $p
+                     OR payout_status  IS NOT $s
+                     OR donated_satang IS NOT $d
+                     OR ($j IS NOT NULL AND pool_job_id IS NOT $j))
+                """;
             command.Parameters.AddWithValue("$id", promptId);
             command.Parameters.AddWithValue("$p", payoutSatang);
-            command.ExecuteNonQuery();
+            command.Parameters.AddWithValue("$s", (object?)known ?? DBNull.Value);
+            command.Parameters.AddWithValue("$d", donatedSatang);
+            command.Parameters.AddWithValue("$j", (object?)jobId ?? DBNull.Value);
+            command.Parameters.AddWithValue("$at", Now());
+            return command.ExecuteNonQuery() > 0;
         }
     }
 
@@ -587,7 +644,7 @@ public sealed class NodeStore : IDisposable
 
     /// <summary>The one place the jobs columns are turned into a record.</summary>
     /// <remarks>
-    /// Two queries select the same ten columns in the same order, and a
+    /// Two queries select the same twelve columns in the same order, and a
     /// hand-copied second reader is how the two drift apart by one index.
     /// </remarks>
     private static JobRecord ReadJob(Microsoft.Data.Sqlite.SqliteDataReader reader) => new()
@@ -608,6 +665,8 @@ public sealed class NodeStore : IDisposable
         OutputFilename = reader.IsDBNull(7) ? null : reader.GetString(7),
         Error = reader.IsDBNull(8) ? null : reader.GetString(8),
         PayoutThb = reader.IsDBNull(9) ? null : reader.GetInt64(9) / 100m,
+        PayoutStatus = reader.IsDBNull(10) ? null : reader.GetString(10),
+        DonatedThb = reader.IsDBNull(11) ? null : reader.GetInt64(11) / 100m,
     };
 
     public IReadOnlyList<JobRecord> RecentJobs(int limit = 100)
@@ -615,7 +674,8 @@ public sealed class NodeStore : IDisposable
         using var connection = Open();
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT prompt_id, kind, status, nodes_total, submitted_at, started_at, completed_at, output_file, error, payout_satang
+            SELECT prompt_id, kind, status, nodes_total, submitted_at, started_at, completed_at, output_file, error, payout_satang,
+                   payout_status, donated_satang
               FROM jobs ORDER BY submitted_at DESC LIMIT $n
             """;
         command.Parameters.AddWithValue("$n", limit);
@@ -637,26 +697,54 @@ public sealed class NodeStore : IDisposable
     /// </remarks>
     public (int Completed, int Failed, decimal? EarnedThb) Totals(DateTimeOffset since)
     {
+        LedgerTotals t = TotalsFor(since);
+        return (t.Completed, t.Failed, t.EarnedSatang is { } satang ? satang / 100m : null);
+    }
+
+    /// <summary>
+    /// Counts and settled money since a moment, including how much of the
+    /// finished work the pool has not settled yet.
+    /// </summary>
+    /// <remarks>
+    /// A voided job is left out of the money: it was settled and then taken
+    /// back, and counting it would show the owner a figure the wallet will
+    /// never see. A job the pool has not settled is left out too, and counted
+    /// separately — "not settled yet" is not "earned nothing".
+    /// </remarks>
+    public LedgerTotals TotalsFor(DateTimeOffset since)
+    {
         using var connection = Open();
         using var command = connection.CreateCommand();
-        command.CommandText = """
+        command.CommandText = $"""
             SELECT
                 SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END),
                 SUM(CASE WHEN status = 'failed'    THEN 1 ELSE 0 END),
-                SUM(payout_satang)
+                SUM({Earned}),
+                SUM(CASE WHEN status = 'completed' AND payout_satang IS NULL THEN 1 ELSE 0 END),
+                SUM(CASE WHEN {IsSettled} THEN 1 ELSE 0 END),
+                COALESCE(SUM(CASE WHEN {IsSettled} THEN donated_satang END), 0)
               FROM jobs
              WHERE completed_at >= $since
             """;
         command.Parameters.AddWithValue("$since", since.ToUnixTimeMilliseconds());
 
         using var reader = command.ExecuteReader();
-        if (!reader.Read()) return (0, 0, null);
+        if (!reader.Read()) return new LedgerTotals(0, 0, null, 0, 0, 0);
 
-        return (
+        return new LedgerTotals(
             reader.IsDBNull(0) ? 0 : reader.GetInt32(0),
             reader.IsDBNull(1) ? 0 : reader.GetInt32(1),
-            reader.IsDBNull(2) ? null : reader.GetInt64(2) / 100m);
+            reader.IsDBNull(2) ? null : reader.GetInt64(2),
+            reader.IsDBNull(3) ? 0 : reader.GetInt32(3),
+            reader.IsDBNull(4) ? 0 : reader.GetInt32(4),
+            reader.GetInt64(5));
     }
+
+    /// <summary>A settled job's pay, or NULL — for SUM(), which then says "nothing settled" as NULL rather than 0.</summary>
+    private const string Earned = "CASE WHEN payout_status IS NOT 'void' THEN payout_satang END";
+
+    /// <summary>The pool settled it and did not take it back.</summary>
+    private const string IsSettled = "payout_satang IS NOT NULL AND payout_status IS NOT 'void'";
 
     /// <summary>
     /// The median wall-clock seconds this machine actually took for a kind of
@@ -879,7 +967,8 @@ public sealed class NodeStore : IDisposable
         using var connection = Open();
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT prompt_id, kind, status, nodes_total, submitted_at, started_at, completed_at, output_file, error, payout_satang
+            SELECT prompt_id, kind, status, nodes_total, submitted_at, started_at, completed_at, output_file, error, payout_satang,
+                   payout_status, donated_satang
               FROM jobs
              WHERE completed_at IS NOT NULL
                AND ($since = 0 OR completed_at >= $since)
@@ -900,13 +989,16 @@ public sealed class NodeStore : IDisposable
     {
         using var connection = Open();
         using var command = connection.CreateCommand();
-        command.CommandText = """
+        command.CommandText = $"""
             SELECT
                 COUNT(*),
                 SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END),
                 SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END),
-                COALESCE(SUM(payout_satang), 0),
-                COALESCE(SUM(CASE WHEN started_at IS NOT NULL THEN completed_at - started_at ELSE 0 END), 0)
+                COALESCE(SUM({Earned}), 0),
+                COALESCE(SUM(CASE WHEN started_at IS NOT NULL THEN completed_at - started_at ELSE 0 END), 0),
+                SUM(CASE WHEN {IsSettled} THEN 1 ELSE 0 END),
+                SUM(CASE WHEN status = 'completed' AND payout_satang IS NULL THEN 1 ELSE 0 END),
+                COALESCE(SUM(CASE WHEN {IsSettled} THEN donated_satang END), 0)
               FROM jobs
              WHERE completed_at IS NOT NULL
                AND ($since = 0 OR completed_at >= $since)
@@ -922,6 +1014,9 @@ public sealed class NodeStore : IDisposable
             Failed = reader.IsDBNull(2) ? 0 : reader.GetInt32(2),
             PayoutSatang = reader.GetInt64(3),
             BusyTime = TimeSpan.FromMilliseconds(reader.GetInt64(4)),
+            Settled = reader.IsDBNull(5) ? 0 : reader.GetInt32(5),
+            Unsettled = reader.IsDBNull(6) ? 0 : reader.GetInt32(6),
+            DonatedSatang = reader.GetInt64(7),
         };
     }
 

@@ -145,6 +145,73 @@ public sealed class XmanStudioClient(HttpClient http, string baseUrl, string pro
     }
 
     /// <summary>
+    /// What the pool makes of this machine, and what its owner has earned
+    /// (contract C6).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The node used to know only its own side: it said "sharing" while the
+    /// pool had reaped it, an administrator had suspended it, or XMAN Studio's
+    /// push to the pool had been failing for a day — and every money figure on
+    /// the screen was a dash, because nothing told it what any job had paid.
+    /// </para>
+    /// <para>
+    /// Authenticated like <see cref="ReferralAsync"/>: the worker id and the
+    /// machine's own relay token, never the machine id, because the answer is
+    /// somebody's money. Fails soft like every call here, but says which kind
+    /// of failure it was — a refused identity needs the owner to re-pair, an
+    /// outage needs nobody, and the caller waits very differently for each.
+    /// </para>
+    /// </remarks>
+    public async Task<NodeStatusResult> StatusAsync(string workerId, string token, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(workerId) || string.IsNullOrWhiteSpace(token))
+            return new NodeStatusResult(StudioOutcome.IdentityRejected, null, null, "เครื่องนี้ยังไม่ได้ลงทะเบียน");
+
+        try
+        {
+            using HttpResponseMessage response = await http.PostAsJsonAsync(
+                $"{_base}/api/v1/product/{productSlug}/status",
+                new { worker_id = workerId, token },
+                ct);
+
+            Refused("status", response);
+            int code = (int)response.StatusCode;
+            var body = await ReadAsync<StatusEnvelope>(response, ct);
+
+            if (response.IsSuccessStatusCode)
+            {
+                return body is { Success: true, Data: { } data }
+                    ? new NodeStatusResult(StudioOutcome.Ok, data, code, null)
+                    : new NodeStatusResult(StudioOutcome.Unavailable, null, code, $"XMAN Studio ตอบกลับในรูปแบบที่อ่านไม่ได้ (HTTP {code})");
+            }
+
+            return code switch
+            {
+                // Who this machine is was not accepted: removed from the
+                // account, paired again elsewhere, or a token the website no
+                // longer holds. Retrying will not change the answer.
+                401 or 422 => new NodeStatusResult(StudioOutcome.IdentityRejected, null, code, body?.Message),
+
+                // A website from before this call existed. Not a fault, and
+                // not worth asking again every few minutes.
+                404 or 405 => new NodeStatusResult(StudioOutcome.NotSupported, null, code, null),
+
+                _ => new NodeStatusResult(StudioOutcome.Unavailable, null, code, $"XMAN Studio ตอบ HTTP {code}"),
+            };
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // Unreachable is the ordinary case on a laptop that just woke up.
+            return new NodeStatusResult(StudioOutcome.Unavailable, null, null, $"ติดต่อ XMAN Studio ไม่ได้: {ex.Message}");
+        }
+    }
+
+    /// <summary>
     /// Exchanges the pairing code from the website for this node's identity.
     /// </summary>
     /// <remarks>
@@ -390,4 +457,141 @@ internal sealed class ReferralEnvelope
 {
     [JsonPropertyName("success")] public bool Success { get; set; }
     [JsonPropertyName("data")] public ReferralSummary? Data { get; set; }
+}
+
+/// <summary>How a call to XMAN Studio ended, as far as what to do next is concerned.</summary>
+public enum StudioOutcome
+{
+    /// <summary>Answered.</summary>
+    Ok,
+
+    /// <summary>The website does not accept this machine's identity (401). Only re-pairing fixes it.</summary>
+    IdentityRejected,
+
+    /// <summary>The website predates the call (404/405). Ask rarely.</summary>
+    NotSupported,
+
+    /// <summary>Unreachable, overloaded, throttled or an unreadable reply. Ask again later.</summary>
+    Unavailable,
+}
+
+/// <param name="Status">The answer, when <paramref name="Outcome"/> is <see cref="StudioOutcome.Ok"/>.</param>
+/// <param name="HttpStatus">What the website said, when it said anything.</param>
+/// <param name="Message">Why there is no answer, in the owner's words where the website gave some.</param>
+public sealed record NodeStatusResult(StudioOutcome Outcome, NodeStatus? Status, int? HttpStatus, string? Message);
+
+/// <summary>
+/// XMAN Studio's view of one machine and its owner's money (contract C6).
+/// </summary>
+/// <remarks>
+/// <para>
+/// Money is integer satang throughout, exactly as the website sends it, and
+/// nullable: a field the website did not send is "not known", which the screen
+/// shows as a dash — never as zero.
+/// </para>
+/// <para>
+/// <see cref="Earnings"/> covers the owner's whole account (every machine,
+/// because there is one wallet); <see cref="Jobs"/> covers this machine only.
+/// </para>
+/// </remarks>
+public sealed class NodeStatus
+{
+    [JsonPropertyName("node")] public NodeDispatch? Node { get; set; }
+    [JsonPropertyName("earnings")] public EarningsSummary? Earnings { get; set; }
+    [JsonPropertyName("jobs")] public List<SettledJob>? Jobs { get; set; }
+}
+
+/// <summary>What the pool last said about this machine, as XMAN Studio recorded it.</summary>
+public sealed class NodeDispatch
+{
+    /// <summary>
+    /// The pool's verdict on the last push: eligible · unassessed ·
+    /// no-matching-model · offline · retired · suspended · rejected — or
+    /// XMAN Studio's own: unconfigured · error. Null when never pushed.
+    /// </summary>
+    [JsonPropertyName("dispatch_status")] public string? DispatchStatus { get; set; }
+
+    /// <summary>The pool's explanation, already in Thai.</summary>
+    [JsonPropertyName("dispatch_note")] public string? DispatchNote { get; set; }
+
+    /// <summary>The pool's row for this machine: ready · busy · warming · draining · terminated … Null from an older pool.</summary>
+    [JsonPropertyName("dispatch_worker_status")] public string? WorkerStatus { get; set; }
+
+    /// <summary>Whether XMAN Studio saw the machine on the relay at its last sync.</summary>
+    [JsonPropertyName("relay_online")] public bool? RelayOnline { get; set; }
+
+    [JsonPropertyName("suspended")] public bool Suspended { get; set; }
+    [JsonPropertyName("suspended_reason")] public string? SuspendedReason { get; set; }
+
+    /// <summary>ISO 8601, kept as text: a format surprise must cost one field, not the whole answer.</summary>
+    [JsonPropertyName("last_seen_at")] public string? LastSeenAtText { get; set; }
+
+    [JsonIgnore] public DateTimeOffset? LastSeenAt => StudioTime.Parse(LastSeenAtText);
+}
+
+/// <summary>The owner's earnings from sharing, across every machine on the account. Integer satang.</summary>
+public sealed class EarningsSummary
+{
+    /// <summary>Finished, inside the hold window.</summary>
+    [JsonPropertyName("pending_satang")] public long? PendingSatang { get; set; }
+
+    /// <summary>Held for an administrator to look at.</summary>
+    [JsonPropertyName("review_satang")] public long? ReviewSatang { get; set; }
+
+    /// <summary>Past the hold, waiting for the next hourly credit to the wallet.</summary>
+    [JsonPropertyName("cleared_satang")] public long? ClearedSatang { get; set; }
+
+    /// <summary>Already credited to the XMAN wallet.</summary>
+    [JsonPropertyName("paid_satang")] public long? PaidSatang { get; set; }
+
+    [JsonPropertyName("today_satang")] public long? TodaySatang { get; set; }
+    [JsonPropertyName("month_satang")] public long? MonthSatang { get; set; }
+
+    /// <summary>What free-share jobs would have paid over the last 30 days.</summary>
+    [JsonPropertyName("donated_satang_30d")] public long? DonatedSatang30d { get; set; }
+
+    /// <summary>The owner's XMAN wallet balance — spendable on the website, not cash.</summary>
+    [JsonPropertyName("wallet_balance_satang")] public long? WalletBalanceSatang { get; set; }
+
+    /// <summary>How long a finished job waits before it is credited.</summary>
+    [JsonPropertyName("hold_hours")] public int? HoldHours { get; set; }
+}
+
+/// <summary>One of this machine's jobs as the pool settled it.</summary>
+public sealed class SettledJob
+{
+    /// <summary>The pool's id for the job (aix-gpu-job-N). Not the join key.</summary>
+    [JsonPropertyName("job_id")] public string? JobId { get; set; }
+
+    /// <summary>ComfyUI's prompt id on this machine — what the local ledger is keyed by.</summary>
+    [JsonPropertyName("prompt_id")] public string? PromptId { get; set; }
+
+    [JsonPropertyName("kind")] public string? Kind { get; set; }
+
+    /// <summary>What the owner receives for it, after the platform's share and any referral.</summary>
+    [JsonPropertyName("amount_satang")] public long AmountSatang { get; set; }
+
+    /// <summary>For a free-share job: what it would have paid.</summary>
+    [JsonPropertyName("donated_value_satang")] public long DonatedValueSatang { get; set; }
+
+    /// <summary>pending · review · cleared · paid · void.</summary>
+    [JsonPropertyName("status")] public string? Status { get; set; }
+
+    [JsonPropertyName("completed_at")] public string? CompletedAtText { get; set; }
+
+    [JsonIgnore] public DateTimeOffset? CompletedAt => StudioTime.Parse(CompletedAtText);
+}
+
+internal sealed class StatusEnvelope
+{
+    [JsonPropertyName("success")] public bool Success { get; set; }
+    [JsonPropertyName("message")] public string? Message { get; set; }
+    [JsonPropertyName("data")] public NodeStatus? Data { get; set; }
+}
+
+internal static class StudioTime
+{
+    public static DateTimeOffset? Parse(string? text) =>
+        DateTimeOffset.TryParse(text, System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.AssumeUniversal, out var at) ? at : null;
 }

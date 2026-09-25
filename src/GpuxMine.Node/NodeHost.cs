@@ -29,7 +29,7 @@ namespace GpuxMine.Node;
 ///     the node already took has been rendered and collected.</item>
 /// </list>
 /// </remarks>
-public sealed class NodeHost : IAsyncDisposable
+public sealed partial class NodeHost : IAsyncDisposable
 {
     /// <summary>The prototype's telemetry cadence. Fast enough to feel live, slow enough to cost nothing.</summary>
     public static readonly TimeSpan SensePeriod = TimeSpan.FromMilliseconds(1400);
@@ -185,6 +185,7 @@ public sealed class NodeHost : IAsyncDisposable
         _background.Add(Guard(SenseLoopAsync(_hostCts.Token), "sensing"));
         _background.Add(Guard(RegisterDeviceLoopAsync(_hostCts.Token), "device registration"));
         _background.Add(Guard(StudioLoopAsync(_hostCts.Token), "xman studio"));
+        _background.Add(Guard(PoolStatusLoopAsync(_hostCts.Token), "pool status"));
         _background.Add(Guard(SweepLoopAsync(_hostCts.Token), "database sweep"));
         _background.Add(Guard(ReconcileLoopAsync(_hostCts.Token), "ledger reconcile"));
         _background.Add(Guard(PurgeLoopAsync(_hostCts.Token), "job purge"));
@@ -338,6 +339,9 @@ public sealed class NodeHost : IAsyncDisposable
     public Task OwnerStartAsync()
     {
         RememberSharing(true);
+        // Stopped, the pool status is asked for every fifteen minutes; the
+        // owner who just pressed START wants to see the pool take the machine.
+        RefreshPoolStatus();
         return StartAsync();
     }
 
@@ -827,6 +831,10 @@ public sealed class NodeHost : IAsyncDisposable
             RelayUrl = relay,
             IdentityRescuedFrom = null,
         };
+        // What the website said about the old identity — a refusal, most
+        // likely, since that is what sends an owner to re-pair — is not
+        // about this one.
+        ForgetPool();
 
         RememberSharing(true);
         await StartAsync();
@@ -1013,9 +1021,9 @@ public sealed class NodeHost : IAsyncDisposable
             // Counted in SQL from midnight, so the figure survives a restart
             // and cannot drift from the rows the queue screen is showing.
             var midnight = new DateTimeOffset(DateTimeOffset.Now.Date, DateTimeOffset.Now.Offset);
-            var (ok, failed, earned) = Store.Totals(midnight);
-            State.SetCounts(ok, failed);
-            State.SetEarnedToday(earned);
+            LedgerTotals sinceMidnight = Store.TotalsFor(midnight);
+            State.SetCounts(sinceMidnight.Completed, sinceMidnight.Failed);
+            State.SetEarnedToday(sinceMidnight.EarnedSatang is { } satang ? satang / 100m : null, sinceMidnight.Unsettled);
             State.SetCurrentJob(Jobs.Current);
 
             // A day boundary crossed while running: re-read so "today" means today.
@@ -1515,6 +1523,7 @@ public sealed class NodeHost : IAsyncDisposable
         _telemetry.Dispose();
         _http.Dispose();
         _assessGate.Dispose();
+        _poolKick.Dispose();
         _hostCts.Dispose();
         Log.Info("[cfg] node stopped");   // last write before the store closes
         Store.Dispose();

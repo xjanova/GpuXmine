@@ -42,6 +42,11 @@
 
     <!-- Semantic -->
     <SolidColorBrush x:Key="Green" Color="#3fae3a"/>
+    <!-- The History rows' DONE colour. It was referenced there and defined
+         nowhere; a StaticResource that cannot be found fails when the row
+         template is first built, which is exactly when the screen has
+         something to show. -->
+    <SolidColorBrush x:Key="GreenDark" Color="#2f8a2b"/>
     <SolidColorBrush x:Key="Orange" Color="#e07a2a"/>
     <SolidColorBrush x:Key="Red" Color="#d8574a"/>
     <SolidColorBrush x:Key="RedDark" Color="#c2542f"/>

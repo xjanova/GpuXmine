@@ -10,7 +10,7 @@
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="0"><TextBlock Text="THROUGHPUT" Style="{StaticResource LcdLabelText}"/><TextBlock Text="{Binding ThroughputText}" Style="{StaticResource LcdValueBlue}" FontSize="20"/></StackPanel>
                 <StackPanel Grid.Column="1"><TextBlock Text="SUCCESS RATE" Style="{StaticResource LcdLabelText}"/><TextBlock Text="{Binding SuccessRateText}" Style="{StaticResource LcdValueGreen}" FontSize="20"/></StackPanel>
-                <StackPanel Grid.Column="2"><TextBlock Text="PAID THIS SESSION" Style="{StaticResource LcdLabelText}"/><TextBlock Text="{Binding PaidSessionText}" Style="{StaticResource LcdValue}" FontSize="20"/></StackPanel>
+                <StackPanel Grid.Column="2"><TextBlock Text="EARNED TODAY" Style="{StaticResource LcdLabelText}"/><TextBlock Text="{Binding PaidSessionText}" Style="{StaticResource LcdValue}" FontSize="20"/></StackPanel>
                 <StackPanel Grid.Column="3"><TextBlock Text="JOBS TODAY" Style="{StaticResource LcdLabelText}"/><TextBlock Style="{StaticResource LcdValueBlue}" FontSize="20"><Run Text="{Binding JobsTodayText, Mode=OneWay}"/><Run Text=" ok · " FontSize="11"/><Run Text="{Binding FailedTodayText, Mode=OneWay}"/><Run Text=" failed" FontSize="11"/></TextBlock></StackPanel>
             </Grid>
         </Border>

@@ -68,7 +68,9 @@
                     </CheckBox>
                     <StackPanel Margin="0,14,0,0">
                         <TextBlock Style="{StaticResource BodyBold}"><Run Text="แชร์ฟรีให้ pool "/><Run Text="{Binding FreeSharePercent, Mode=OneWay}"/><Run Text="%"/></TextBlock>
-                        <TextBlock Text="ส่วนนี้ไม่ได้ค่าตอบแทน แต่เพิ่มคะแนนความร่วมมือ → ได้งานที่จ่ายเงินมากขึ้น ปรับได้ 0–100%" Style="{StaticResource Muted}"/>
+                        <!-- เคยเขียนว่าแชร์ฟรีแล้วจะได้งานที่จ่ายมากขึ้น ซึ่งไม่มีโค้ดส่วนไหนทำแบบนั้น
+                             บอกตามที่ pool ทำจริง: งานส่วนนี้ได้ 0 และบันทึกมูลค่าไว้ -->
+                        <TextBlock Text="งานส่วนนี้ไม่ได้ค่าตอบแทน — pool บันทึกมูลค่าไว้เป็นยอดที่คุณให้ฟรี (ดูได้ในหน้า Wallet และ History) ปรับได้ 0–100%" Style="{StaticResource Muted}" TextWrapping="Wrap"/>
                         <Slider Style="{StaticResource PowerSlider}" Minimum="0" Maximum="100" TickFrequency="5" IsSnapToTickEnabled="True" Value="{Binding FreeSharePercent, Mode=TwoWay}" Margin="0,6,0,0"/>
                     </StackPanel>
                 </StackPanel>

@@ -101,6 +101,11 @@
                                 <TextBlock Text="ลงทะเบียนแล้ว" Style="{StaticResource LcdValueGreen}" FontSize="13" VerticalAlignment="Center"/>
                             </StackPanel>
                             <TextBlock Text="{Binding PairedSummary}" Style="{StaticResource LcdLabelText}" TextWrapping="Wrap"/>
+                            <!-- ลงทะเบียนไว้ แต่ relay หรือ XMAN Studio ไม่รับตัวตนนี้แล้ว — จอหลักส่งเจ้าของมาที่นี่
+                                 หน้านี้จึงต้องบอกต่อว่าทำอะไร ไม่ใช่ขึ้นแค่ "ลงทะเบียนแล้ว" สีเขียว -->
+                            <TextBlock Text="{Binding RepairHint}" Style="{StaticResource LcdLabelText}" Typography.Capitals="Normal"
+                                       Foreground="{StaticResource LcdOrange}" TextWrapping="Wrap" Margin="0,6,0,0"
+                                       Visibility="{Binding RepairHint, Converter={StaticResource NullVis}}"/>
                             <Grid Margin="0,8,0,0">
                                 <TextBlock Text="relay" Style="{StaticResource LcdLabelText}"/>
                                 <TextBlock Text="{Binding RelayHostText}" Style="{StaticResource Mono}" FontSize="11"

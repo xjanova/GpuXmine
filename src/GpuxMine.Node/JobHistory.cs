@@ -19,6 +19,15 @@ public sealed class JobRecord
     /// <summary>Set by the pool when it settles the job. Null until then — shown as "—", never as 0.</summary>
     public decimal? PayoutThb { get; set; }
 
+    /// <summary>
+    /// Where the payout is on its way to the wallet: pending · review · cleared
+    /// · paid · void, as XMAN Studio reports it. Null until the pool settles the job.
+    /// </summary>
+    public string? PayoutStatus { get; set; }
+
+    /// <summary>For a free-share job, what it would have paid. Null until settled.</summary>
+    public decimal? DonatedThb { get; set; }
+
     /// <summary>What kind of work, as far as the graph tells us (sampler = image gen, etc.).</summary>
     public string Kind { get; set; } = "job";
 

@@ -66,8 +66,20 @@ public sealed class NodeState
 
     public string? UpdateStatus { get; private set; }
 
-    /// <summary>The pool's view of this node, once it has one. Null = no server data yet.</summary>
+    /// <summary>
+    /// What the pool has settled for this machine's jobs finished today, voids
+    /// left out. Null = nothing settled yet today — shown as "—", never as 0.
+    /// </summary>
     public decimal? EarnedTodayThb { get; private set; }
+
+    /// <summary>Jobs this machine finished today that the pool has not settled yet.</summary>
+    public int UnsettledToday { get; private set; }
+
+    /// <summary>
+    /// The pool's view of this machine and the owner's money, from XMAN
+    /// Studio's status call. <see cref="PoolView.None"/> until the first answer.
+    /// </summary>
+    public PoolView Pool { get; private set; } = PoolView.None;
 
     /// <summary>The capability report. Null means this machine has never passed one, and gets no work.</summary>
     public Assessment.NodeAssessment? Assessment { get; private set; }
@@ -125,7 +137,8 @@ public sealed class NodeState
     internal void SetLatency(int? ms) => Set(s => s.RelayLatencyMs = ms);
     internal void SetLicense(LicenseState l) => Set(s => s.License = l);
     internal void SetUpdateStatus(string? text) => Set(s => s.UpdateStatus = text);
-    internal void SetEarnedToday(decimal? thb) => Set(s => s.EarnedTodayThb = thb);
+    internal void SetEarnedToday(decimal? thb, int unsettled = 0) => Set(s => { s.EarnedTodayThb = thb; s.UnsettledToday = unsettled; });
+    internal void SetPool(PoolView pool) => Set(s => s.Pool = pool);
     internal void SetAssessment(Assessment.NodeAssessment? a) => Set(s => s.Assessment = a);
     internal void SetAssessing(bool busy) => Set(s => s.Assessing = busy);
     internal void SetAssessmentProgress(Assessment.AssessmentProgress p) => Set(s => s.AssessmentProgress = p);

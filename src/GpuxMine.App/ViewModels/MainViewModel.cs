@@ -91,6 +91,7 @@ public sealed class MainViewModel : ObservableObject
         SetRetention = new RelayCommand(p => RetentionDays = int.Parse((string)p!));
         PurgeNow = RelayCommand.Of(PurgeHistoryNow);
         RefreshReferral = RelayCommand.Of(() => _ = LoadReferralAsync());
+        RefreshPool = RelayCommand.Of(AskPoolAgain);
         ChangePairing = RelayCommand.Of(BeginRepair);
         CancelPairingChange = RelayCommand.Of(EndRepair);
         OpenUrl = new RelayCommand(p => OpenInBrowser((string)p!));
@@ -164,7 +165,7 @@ public sealed class MainViewModel : ObservableObject
     public string FailedTodayText { get; private set; } = "0";
     public string UptimeText { get; private set; } = "00:00";
     public string EarnedTodayText { get; private set; } = "—";
-    public string EarnedNote { get; private set; } = "ยอดจริงจะแสดงเมื่อ pool ส่งรายงานการจ่าย (M2)";
+    public string EarnedNote { get; private set; } = "กำลังอ่านยอดจาก XMAN Studio…";
     public string LatencyText { get; private set; } = "—";
     public string LicenseText { get; private set; } = "ระดับฟรี";
     public string? UpdateStatus { get; private set; }
@@ -203,9 +204,16 @@ public sealed class MainViewModel : ObservableObject
         Draining = st.Draining;
         PauseReason = st.PauseReason;
         IsRejected = st.Connection == ConnectionState.Rejected;
+        var pool = st.Pool;
         ConnectionText = st.Connection switch
         {
             _ when st.Draining => "STOPPING · HANDING OVER",
+            // The relay is up, but the pool will send nothing: suspended,
+            // retired, or an identity XMAN Studio no longer knows. "ACTIVE"
+            // here is the exact false comfort the owner was left with before.
+            ConnectionState.Connected when pool.Blocked => pool.Suspended ? "CONNECTED · SUSPENDED"
+                : pool.Outcome == PoolOutcome.IdentityRejected ? "CONNECTED · RE-PAIR"
+                : "CONNECTED · NOT IN POOL",
             ConnectionState.Connected => Accepting ? "SHARING · ACTIVE" : "CONNECTED · PAUSED",
             ConnectionState.Connecting => "CONNECTING…",
             ConnectionState.Reconnecting => "RECONNECTING…",
@@ -227,6 +235,8 @@ public sealed class MainViewModel : ObservableObject
         FailedTodayText = st.JobsFailedToday.ToString("N0");
         UptimeText = st.Running ? $"{(int)st.Uptime.TotalHours:00}:{st.Uptime.Minutes:00}" : "00:00";
         EarnedTodayText = st.EarnedTodayThb is { } thb ? $"฿{thb:N2}" : "—";
+        EarnedNote = EarnedReason(st);
+        PullPool(pool);
         LatencyText = st.RelayLatencyMs is { } ms ? $"{ms}ms" : "—";
         LicenseText = st.License is { Valid: true } l ? $"Pro · {l.Plan ?? "active"}" : "ระดับฟรี";
         UpdateStatus = st.UpdateStatus;
@@ -272,7 +282,7 @@ public sealed class MainViewModel : ObservableObject
         // next launch, which is exactly the report: it comes back after closing
         // and reopening. Re-raising costs four property reads a second and
         // makes the screen correct itself rather than commit to a first guess.
-        Raise(nameof(IsPaired)); Raise(nameof(ShowPairingForm)); Raise(nameof(PairedSummary));
+        Raise(nameof(IsPaired)); Raise(nameof(ShowPairingForm)); Raise(nameof(PairedSummary)); Raise(nameof(RepairHint));
         Raise(nameof(IsConfigured)); Raise(nameof(ConfigureHint)); Raise(nameof(WorkerIdText));
         Raise(nameof(RelayHostText));
 
@@ -281,7 +291,7 @@ public sealed class MainViewModel : ObservableObject
             nameof(Draining), nameof(IsRejected), nameof(ConnectionNote), nameof(HasConnectionNote),
             nameof(GpuMeasured), nameof(GpuName), nameof(GpuDetail), nameof(DriverText), nameof(LoadPct), nameof(TempC), nameof(FanPct), nameof(PowerW),
             nameof(VramUsedGb), nameof(VramTotalGb), nameof(VramFraction), nameof(VramText),
-            nameof(JobsTodayText), nameof(FailedTodayText), nameof(UptimeText), nameof(EarnedTodayText), nameof(LatencyText), nameof(LicenseText), nameof(UpdateStatus),
+            nameof(JobsTodayText), nameof(FailedTodayText), nameof(UptimeText), nameof(EarnedTodayText), nameof(EarnedNote), nameof(LatencyText), nameof(LicenseText), nameof(UpdateStatus),
             nameof(StatusBarLeft), nameof(StatusBarPower), nameof(StatusBarRight),
             nameof(CurrentJobTitle), nameof(CurrentJobId), nameof(CurrentJobProgress), nameof(CurrentJobProgressText), nameof(HasCurrentJob),
             nameof(ProfileName), nameof(WattsEstimateText), nameof(VideoFitsCard),
@@ -567,7 +577,27 @@ public sealed class MainViewModel : ObservableObject
         public string Day => (j.CompletedAt ?? j.StartedAt ?? j.SubmittedAt)
             .ToString("dd/MM/yyyy", System.Globalization.CultureInfo.InvariantCulture);
         public string Duration => j.Duration is { } d ? $"{d.TotalSeconds:0.0}s" : "";
-        public string Payout => j.PayoutThb is { } p ? $"+฿{p:N2}" : "—";
+
+        /// <summary>
+        /// What the pool settled the job at: "—" until it has, the donated
+        /// value for a free-share job, and a voided amount without its plus
+        /// sign, because the owner will not receive it.
+        /// </summary>
+        public string Payout => j.PayoutThb switch
+        {
+            null => "—",
+            { } p when IsVoid => $"฿{p:N2}",
+            0m when j.DonatedThb is > 0m => $"ฟรี ฿{j.DonatedThb:N2}",
+            { } p => $"+฿{p:N2}",
+        };
+
+        /// <summary>Where this job's pay is on its way to the wallet. Empty for work that earns nothing.</summary>
+        public string PoolStatus => j.PayoutThb is null
+            ? (j.Status == JobStatus.Completed ? "รอตัดยอด" : "")
+            : j.PayoutStatus is null ? "ตัดยอดแล้ว" : PoolView.DescribePayoutStatus(j.PayoutStatus);
+
+        public bool IsVoid => j.PayoutStatus == "void";
+        public bool IsPaid => j.PayoutStatus == "paid";
         public bool IsRunning => j.Status == JobStatus.Running;
         public bool IsFailed => j.Status == JobStatus.Failed;
         public string? Error => j.Error;
@@ -635,6 +665,198 @@ public sealed class MainViewModel : ObservableObject
         });
     }
 
+    // ------------------------------------------------- pool status + wallet
+
+    // What the pool makes of this machine, and the owner's money, as XMAN
+    // Studio last reported them (contract C6). The node asks; this only draws.
+    // Every figure is the website's, in satang, and a figure it has not sent
+    // is a dash with the reason beside it — never a zero, never an estimate.
+
+    private PoolView? _shownPool;
+
+    public string PoolHeadline { get; private set; } = PoolView.None.Headline;
+    public string? PoolDetail { get; private set; }
+    public bool HasPoolDetail => !string.IsNullOrWhiteSpace(PoolDetail);
+
+    /// <summary>What only the owner (or an administrator) can fix. Red, on the Dashboard's first panel.</summary>
+    public string? PoolAlert { get; private set; }
+    public bool HasPoolAlert => !string.IsNullOrWhiteSpace(PoolAlert);
+
+    /// <summary>How fresh the pool's view is, and whether the latest ask failed.</summary>
+    public string PoolWhenText { get; private set; } = "";
+
+    /// <summary>What XMAN Studio saw of the machine on the relay, and when.</summary>
+    public string PoolSeenText { get; private set; } = "";
+
+    /// <summary>This machine's last day, from its own ledger now that the pool's payouts land in it.</summary>
+    public string Pool24hText { get; private set; } = "";
+
+    public bool PoolSuspended { get; private set; }
+
+    public string WalletBalanceText { get; private set; } = "—";
+    public string WalletNote { get; private set; } = "กำลังอ่านยอดจาก XMAN Studio…";
+    public bool WalletHasData { get; private set; }
+    public string EarnPendingText { get; private set; } = "—";
+    public string EarnReviewText { get; private set; } = "—";
+    public string EarnClearedText { get; private set; } = "—";
+    public string EarnPaidText { get; private set; } = "—";
+    public string EarnTodayText { get; private set; } = "—";
+    public string EarnMonthText { get; private set; } = "—";
+    public string EarnDonatedText { get; private set; } = "—";
+    public string HoldText { get; private set; } = "—";
+
+    /// <summary>What the flow from a finished job to the wallet looks like, with the website's own hold.</summary>
+    public string EarningsFlowText { get; private set; } =
+        "งานที่ทำเสร็จจะอยู่ในระยะพักก่อน แล้วเข้ากระเป๋า XMAN อัตโนมัติเป็นรอบทุกชั่วโมง งานที่ต้องตรวจสอบจะรอผู้ดูแลก่อน";
+
+    public RelayCommand RefreshPool { get; }
+    public string? PoolRefreshNote { get; private set; }
+
+    private void AskPoolAgain()
+    {
+        // The host spaces the calls out itself, so pressing twice is one
+        // refresh, and pressing ten times does not trip the website's limit.
+        _host.RefreshPoolStatus();
+        PoolRefreshNote = "ขอข้อมูลใหม่จาก XMAN Studio แล้ว — อัปเดตภายในไม่กี่วินาที";
+        Raise(nameof(PoolRefreshNote));
+    }
+
+    /// <summary>Why EARNED TODAY says what it says.</summary>
+    private static string EarnedReason(NodeState st)
+    {
+        var pool = st.Pool;
+        if (st.EarnedTodayThb is not null)
+        {
+            return st.UnsettledToday > 0
+                ? $"เครื่องนี้ · ตัดยอดแล้ว · อีก {st.UnsettledToday:N0} งานรอ pool ตัดยอด"
+                : "เครื่องนี้ · ตามที่ pool ตัดยอดแล้ว";
+        }
+
+        return pool.Outcome switch
+        {
+            PoolOutcome.Unpaired => "ลงทะเบียนเครื่องก่อน ยอดจึงจะแสดง",
+            PoolOutcome.IdentityRejected => "XMAN Studio ไม่รู้จักเครื่องนี้แล้ว — ลงทะเบียนใหม่ในหน้า Settings",
+            PoolOutcome.NotSupported => "XMAN Studio รุ่นนี้ยังไม่ส่งยอดให้โปรแกรม — ดูที่หน้าเว็บ",
+            PoolOutcome.NotAsked => "กำลังอ่านยอดจาก XMAN Studio…",
+            PoolOutcome.Unavailable when pool.Last is null => "ยังอ่านยอดจาก XMAN Studio ไม่ได้ — จะลองใหม่เอง",
+            _ => st.UnsettledToday > 0
+                ? $"งานวันนี้ {st.UnsettledToday:N0} งานยังรอ pool ตัดยอด"
+                : "ยังไม่มีงานวันนี้ที่ pool ตัดยอด",
+        };
+    }
+
+    /// <summary>
+    /// Redraws the pool's view when the host has published a new one — by
+    /// reference, so the 1.4 s tick costs nothing between answers.
+    /// </summary>
+    private void PullPool(PoolView pool)
+    {
+        if (ReferenceEquals(pool, _shownPool)) return;
+        bool ledgerMoved = pool.LedgerChanges > 0;
+        _shownPool = pool;
+
+        PoolHeadline = pool.Headline;
+        PoolDetail = pool.Detail;
+        PoolAlert = pool.Alert;
+        PoolSuspended = pool.Suspended;
+
+        PoolWhenText = pool switch
+        {
+            { Outcome: PoolOutcome.Unavailable, LastOkAt: { } ok } => $"ข้อมูลเมื่อ {PoolView.When(ok)} · ตอนนี้ติดต่อ XMAN Studio ไม่ได้ จะลองใหม่เอง",
+            { LastOkAt: { } ok } => $"อัปเดต {PoolView.When(ok)}",
+            { CheckedAt: { } at } => $"ถามล่าสุด {PoolView.When(at)}",
+            _ => "",
+        };
+
+        PoolSeenText = pool.Node is { } node
+            ? (node.RelayOnline switch
+                {
+                    true => "XMAN Studio เห็นเครื่องนี้ออนไลน์",
+                    false => "XMAN Studio เห็นเครื่องนี้ออฟไลน์",
+                    null => "XMAN Studio ยังไม่รู้ว่าเครื่องนี้ออนไลน์ไหม",
+                })
+              + (node.LastSeenAt is { } seen ? $" · เห็นล่าสุด {PoolView.When(seen)}" : "")
+            : "";
+
+        var e = pool.Earnings;
+        WalletHasData = e is not null;
+        WalletBalanceText = PoolView.Baht(e?.WalletBalanceSatang);
+        EarnPendingText = PoolView.Baht(e?.PendingSatang);
+        EarnReviewText = PoolView.Baht(e?.ReviewSatang);
+        EarnClearedText = PoolView.Baht(e?.ClearedSatang);
+        EarnPaidText = PoolView.Baht(e?.PaidSatang);
+        EarnTodayText = PoolView.Baht(e?.TodaySatang);
+        EarnMonthText = PoolView.Baht(e?.MonthSatang);
+        EarnDonatedText = PoolView.Baht(e?.DonatedSatang30d);
+        HoldText = e?.HoldHours is { } h ? (h == 0 ? "ไม่มีระยะพัก" : $"{h:N0} ชั่วโมง") : "—";
+        if (e?.HoldHours is { } hold)
+        {
+            EarningsFlowText = (hold == 0
+                    ? "งานที่ทำเสร็จเข้ากระเป๋า XMAN อัตโนมัติในรอบถัดไป (ทุกชั่วโมง)"
+                    : $"งานที่ทำเสร็จจะพักไว้ {hold:N0} ชั่วโมง แล้วเข้ากระเป๋า XMAN อัตโนมัติในรอบถัดไป (ทุกชั่วโมง)")
+                + " งานที่ต้องตรวจสอบจะรอผู้ดูแลก่อน งานที่ถูกยกเลิกไม่ได้ค่าตอบแทน";
+        }
+
+        WalletNote = pool.Outcome switch
+        {
+            _ when e is not null && pool.LastOkAt is { } ok =>
+                $"ทั้งบัญชี (ทุกเครื่อง) · อัปเดต {PoolView.When(ok)}"
+                + (pool.Outcome == PoolOutcome.Unavailable ? " · ตอนนี้ติดต่อ XMAN Studio ไม่ได้" : ""),
+            PoolOutcome.Unpaired => "ลงทะเบียนเครื่องในหน้า Settings ก่อน ยอดของบัญชีจึงจะแสดงที่นี่",
+            PoolOutcome.IdentityRejected => "XMAN Studio ไม่รู้จักเครื่องนี้แล้ว — ลงทะเบียนใหม่ในหน้า Settings แล้วยอดจะกลับมา",
+            PoolOutcome.NotSupported => "XMAN Studio รุ่นนี้ยังไม่ส่งยอดให้โปรแกรม — กดปุ่มด้านล่างเพื่อดูที่หน้าเว็บ",
+            PoolOutcome.Unavailable => $"ยังอ่านยอดจาก XMAN Studio ไม่ได้ — {pool.Problem ?? "ติดต่อไม่ได้"} · จะลองใหม่เอง",
+            PoolOutcome.Ok => "XMAN Studio ไม่ได้ส่งยอดเงินมากับสถานะ",
+            _ => "กำลังอ่านยอดจาก XMAN Studio…",
+        };
+
+        if (pool.Outcome != PoolOutcome.NotAsked) PoolRefreshNote = null;
+
+        foreach (var name in new[] {
+            nameof(PoolHeadline), nameof(PoolDetail), nameof(HasPoolDetail), nameof(PoolAlert), nameof(HasPoolAlert),
+            nameof(PoolWhenText), nameof(PoolSeenText), nameof(PoolSuspended), nameof(PoolRefreshNote),
+            nameof(WalletBalanceText), nameof(WalletNote), nameof(WalletHasData),
+            nameof(EarnPendingText), nameof(EarnReviewText), nameof(EarnClearedText), nameof(EarnPaidText),
+            nameof(EarnTodayText), nameof(EarnMonthText), nameof(EarnDonatedText), nameof(HoldText), nameof(EarningsFlowText) })
+            Raise(name);
+
+        // Only when the answer actually moved a payout: rebuilding the lists
+        // on every poll would reset what the owner is looking at every three
+        // minutes for nothing.
+        if (ledgerMoved)
+        {
+            RefreshJobs();
+            LoadHistory();
+        }
+    }
+
+    /// <summary>This machine's last 24 hours from its ledger — the Dashboard's pool panel.</summary>
+    private void RefreshPool24h()
+    {
+        try
+        {
+            LedgerTotals day = _host.Store.TotalsFor(DateTimeOffset.Now.AddHours(-24));
+            if (day.Completed == 0 && day.Failed == 0)
+            {
+                Pool24hText = "24 ชม. ล่าสุด: เครื่องนี้ยังไม่ได้ทำงานให้ pool";
+            }
+            else
+            {
+                string settled = day.Settled > 0
+                    ? $"ตัดยอดแล้ว {day.Settled:N0} งาน {PoolView.Baht(day.EarnedSatang)}"
+                    : "ยังไม่มีงานที่ตัดยอด";
+                string waiting = day.Unsettled > 0 ? $" · รอตัดยอด {day.Unsettled:N0} งาน" : "";
+                string donated = day.DonatedSatang > 0 ? $" · ให้ pool ฟรี {PoolView.Baht(day.DonatedSatang)}" : "";
+                Pool24hText = $"24 ชม. ล่าสุด เครื่องนี้ทำเสร็จ {day.Completed:N0} งาน · {settled}{waiting}{donated}";
+            }
+        }
+        catch (Exception ex)
+        {
+            Pool24hText = $"อ่านสรุป 24 ชม. ไม่ได้: {ex.Message}";
+        }
+        Raise(nameof(Pool24hText));
+    }
+
     // ------------------------------------------------------------ history
 
     /// <summary>
@@ -665,9 +887,27 @@ public sealed class MainViewModel : ObservableObject
     public string HistoryOkText => _historyTotals.Completed.ToString("N0");
     public string HistoryFailedText => _historyTotals.Failed.ToString("N0");
 
-    /// <summary>Null payouts are "—", never ฿0.00 — the pool has not settled them yet.</summary>
+    /// <summary>
+    /// "—" until the pool has settled something in the window — never ฿0.00 for
+    /// work that is merely waiting. Once it has, the sum is shown even when it
+    /// is zero: free-share jobs really did pay nothing.
+    /// </summary>
     public string HistoryPayoutText =>
-        _historyTotals.PayoutSatang > 0 ? $"฿{_historyTotals.PayoutThb:N2}" : "—";
+        _historyTotals.Settled > 0 ? $"฿{_historyTotals.PayoutThb:N2}" : "—";
+
+    /// <summary>What the payout figure covers, and what it does not yet.</summary>
+    public string HistoryPayoutNote
+    {
+        get
+        {
+            var t = _historyTotals;
+            if (t.Completed == 0) return "";
+            string note = t.Settled > 0 ? $"ตัดยอดแล้ว {t.Settled:N0} งาน" : "pool ยังไม่ได้ตัดยอดงานในช่วงนี้";
+            if (t.Unsettled > 0) note += $" · รอตัดยอด {t.Unsettled:N0}";
+            if (t.DonatedSatang > 0) note += $" · ให้ฟรี {PoolView.Baht(t.DonatedSatang)}";
+            return note;
+        }
+    }
 
     public string HistoryBusyText
     {
@@ -714,8 +954,9 @@ public sealed class MainViewModel : ObservableObject
         }
 
         Raise(nameof(HistoryJobsText)); Raise(nameof(HistoryOkText)); Raise(nameof(HistoryFailedText));
-        Raise(nameof(HistoryPayoutText)); Raise(nameof(HistoryBusyText)); Raise(nameof(HistoryRangeText));
+        Raise(nameof(HistoryPayoutText)); Raise(nameof(HistoryPayoutNote)); Raise(nameof(HistoryBusyText)); Raise(nameof(HistoryRangeText));
         Raise(nameof(HistoryIsEmpty));
+        RefreshPool24h();
     }
 
     // ------------------------------------------------- history housekeeping
@@ -880,6 +1121,17 @@ public sealed class MainViewModel : ObservableObject
     /// register it — the one screen that should have told them the opposite.
     /// </remarks>
     public bool ShowPairingForm => !IsPaired || _repairing;
+
+    /// <summary>
+    /// Registered, but refused: the relay or XMAN Studio no longer accepts
+    /// this identity. The Dashboard sends the owner here; this says what to press.
+    /// </summary>
+    public string? RepairHint =>
+        _host.State.Pool.Outcome == PoolOutcome.IdentityRejected
+            ? "XMAN Studio ไม่รู้จักตัวตนนี้แล้ว — ขอรหัสใหม่จากหน้าเครื่องของฉัน แล้วกด \"ลงทะเบียนใหม่ด้วยรหัสอื่น\""
+        : _host.State.Connection == ConnectionState.Rejected
+            ? $"{_host.State.ConnectionNote} — ขอรหัสใหม่จากหน้าเครื่องของฉัน แล้วกด \"ลงทะเบียนใหม่ด้วยรหัสอื่น\""
+        : null;
 
     /// <summary>What a registered machine is told instead of the form.</summary>
     public string PairedSummary => IsPaired

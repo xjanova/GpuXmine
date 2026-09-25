@@ -90,6 +90,11 @@ public sealed class TrayIcon : IDisposable
         string status = !s.Running ? "หยุดอยู่"
             : s.Connection == ConnectionState.Rejected ? "relay ปฏิเสธ — ลงทะเบียนใหม่"
             : s.Draining ? "กำลังหยุด — ส่งงานให้ครบ"
+            // Connected but the pool sends nothing: "กำลังแชร์" would be the
+            // same false comfort the Dashboard used to give.
+            : s.Pool.Suspended ? "ถูกระงับโดย XMAN Studio"
+            : s.Pool.Outcome == PoolOutcome.IdentityRejected ? "XMAN Studio ไม่รู้จักเครื่อง — ลงทะเบียนใหม่"
+            : s.Pool.Blocked ? "ไม่อยู่ใน pool — ดูหน้า Dashboard"
             : s.Accepting ? "กำลังแชร์"
             : s.PauseReason ?? "หยุดรับงานชั่วคราว";
 
