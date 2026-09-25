@@ -22,6 +22,12 @@
     <PackageReference Include="Microsoft.Extensions.Configuration.CommandLine" Version="10.0.0" />
   </ItemGroup>
   <ItemGroup>
+    <!-- The node's tests drive the progress events, the drain and the
+         reconciler directly, which a black-box test through ComfyUI's own
+         websocket could only do by racing it. -->
+    <InternalsVisibleTo Include="GpuxMine.Node.Tests" />
+  </ItemGroup>
+  <ItemGroup>
     <!-- Everything a node does, with no UI and no Windows dependency: the
          console agent, the WPF app and the Linux build all host this one
          library. Platform-specific sensing comes in through interfaces. -->
