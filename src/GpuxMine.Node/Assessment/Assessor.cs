@@ -175,6 +175,9 @@ public sealed class Assessor(
         {
             _steps.Begin("spec");
             await ReadSystemAsync(assessment, ct);
+            // The card this report is about, so a swap voids it the way a new
+            // machine does — see NodeAssessment.GpuHash.
+            assessment.GpuHash = NodeAssessment.GpuHashOf(assessment.GpuName, assessment.VramTotalMb);
             _steps.Finish("spec");
 
             _steps.Begin("models");

@@ -308,7 +308,28 @@ public sealed class NodeStore : IDisposable
                 CREATE INDEX IF NOT EXISTS ix_log_at ON log (at DESC);
                 CREATE INDEX IF NOT EXISTS ix_log_channel ON log (channel, at DESC);
                 """);
+
+            // Added after the table shipped, so added here rather than in the
+            // CREATE: a ledger from an earlier build already has the table and
+            // CREATE IF NOT EXISTS would leave it without them.
+            //   purged_at    unix ms when the job's files and history were
+            //                taken off this machine; NULL until then
+            //   input_files  JSON [{filename, subfolder, type}] aixman uploaded
+            //                for the job, so they can be purged with it
+            EnsureColumn(connection, "jobs", "purged_at", "INTEGER");
+            EnsureColumn(connection, "jobs", "input_files", "TEXT");
         }
+    }
+
+    private static void EnsureColumn(SqliteConnection connection, string table, string column, string type)
+    {
+        using (var probe = connection.CreateCommand())
+        {
+            probe.CommandText = $"SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = $c";
+            probe.Parameters.AddWithValue("$c", column);
+            if (Convert.ToInt32(probe.ExecuteScalar() ?? 0) > 0) return;
+        }
+        Execute(connection, $"ALTER TABLE {table} ADD COLUMN {column} {type}");
     }
 
     // ------------------------------------------------------------- settings
@@ -410,17 +431,153 @@ public sealed class NodeStore : IDisposable
     }
 
     /// <summary>Jobs still open past <paramref name="olderThan"/> — what the reconciler settles from ComfyUI's history.</summary>
-    public IReadOnlyList<string> UnsettledJobs(TimeSpan olderThan)
+    public IReadOnlyList<string> UnsettledJobs(TimeSpan olderThan) =>
+        UnsettledPage(olderThan, limit: 20).Select(j => j.PromptId).ToArray();
+
+    /// <summary>One open job, and when it was submitted — the key the next page starts after.</summary>
+    public sealed record OpenJob(string PromptId, DateTimeOffset SubmittedAt, long SubmittedAtMs);
+
+    /// <summary>
+    /// A page of jobs still open past <paramref name="olderThan"/>, oldest
+    /// first, starting after <paramref name="after"/>.
+    /// </summary>
+    /// <remarks>
+    /// Paged rather than "the twenty oldest": a row ComfyUI no longer knows
+    /// about stayed at the front of that list forever, and every job newer than
+    /// the twentieth such row was never reconciled at all.
+    /// </remarks>
+    public IReadOnlyList<OpenJob> UnsettledPage(TimeSpan olderThan, int limit = 50, OpenJob? after = null)
     {
         long cutoff = DateTimeOffset.UtcNow.Subtract(olderThan).ToUnixTimeMilliseconds();
         using var connection = Open();
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT prompt_id FROM jobs
+            SELECT prompt_id, submitted_at FROM jobs
              WHERE status IN ('queued', 'running') AND submitted_at < $cutoff
-             ORDER BY submitted_at LIMIT 20
+               AND (submitted_at > $afterAt OR (submitted_at = $afterAt AND prompt_id > $afterId))
+             ORDER BY submitted_at, prompt_id LIMIT $n
             """;
         command.Parameters.AddWithValue("$cutoff", cutoff);
+        command.Parameters.AddWithValue("$afterAt", after?.SubmittedAtMs ?? long.MinValue);
+        command.Parameters.AddWithValue("$afterId", after?.PromptId ?? "");
+        command.Parameters.AddWithValue("$n", limit);
+
+        var rows = new List<OpenJob>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            long at = reader.GetInt64(1);
+            rows.Add(new OpenJob(reader.GetString(0), FromUnix(at), at));
+        }
+        return rows;
+    }
+
+    /// <summary>Whether this prompt came down the tunnel — the only prompts a purge may touch.</summary>
+    public bool HasJob(string promptId)
+    {
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT 1 FROM jobs WHERE prompt_id = $id";
+        command.Parameters.AddWithValue("$id", promptId);
+        return command.ExecuteScalar() is not null;
+    }
+
+    /// <summary>The job is on record and has not been finished — queued or running.</summary>
+    public bool JobIsOpen(string promptId)
+    {
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT 1 FROM jobs WHERE prompt_id = $id AND status IN ('queued', 'running')";
+        command.Parameters.AddWithValue("$id", promptId);
+        return command.ExecuteScalar() is not null;
+    }
+
+    /// <summary>Records which uploaded files a job reads, so they can be purged with it after a restart.</summary>
+    public void JobInputs(string promptId, IReadOnlyList<ComfyFile> inputs)
+    {
+        if (inputs.Count == 0) return;
+        string json = System.Text.Json.JsonSerializer.Serialize(
+            inputs.Select(f => new { filename = f.Filename, subfolder = f.Subfolder, type = f.Type }));
+
+        lock (_writeGate)
+        {
+            using var connection = Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE jobs SET input_files = $files WHERE prompt_id = $id";
+            command.Parameters.AddWithValue("$id", promptId);
+            command.Parameters.AddWithValue("$files", json);
+            command.ExecuteNonQuery();
+        }
+    }
+
+    /// <summary>The uploaded files a job reads, as <see cref="JobInputs"/> recorded them.</summary>
+    public IReadOnlyList<ComfyFile> InputsOf(string promptId)
+    {
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT input_files FROM jobs WHERE prompt_id = $id";
+        command.Parameters.AddWithValue("$id", promptId);
+        if (command.ExecuteScalar() is not string json || json.Length == 0) return [];
+
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            var files = new List<ComfyFile>();
+            foreach (var item in doc.RootElement.EnumerateArray())
+            {
+                string? name = item.TryGetProperty("filename", out var f) ? f.GetString() : null;
+                if (string.IsNullOrEmpty(name)) continue;
+                files.Add(new ComfyFile(
+                    name,
+                    item.TryGetProperty("subfolder", out var s) ? s.GetString() ?? "" : "",
+                    item.TryGetProperty("type", out var t) ? t.GetString() ?? "input" : "input"));
+            }
+            return files;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return [];
+        }
+    }
+
+    /// <summary>Records that a job's files and history have been taken off this machine.</summary>
+    public void JobPurged(string promptId)
+    {
+        lock (_writeGate)
+        {
+            using var connection = Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE jobs SET purged_at = $at WHERE prompt_id = $id AND purged_at IS NULL";
+            command.Parameters.AddWithValue("$id", promptId);
+            command.Parameters.AddWithValue("$at", Now());
+            command.ExecuteNonQuery();
+        }
+    }
+
+    /// <summary>
+    /// Finished jobs nobody has purged, that ended between
+    /// <paramref name="since"/> and <paramref name="before"/>.
+    /// </summary>
+    /// <remarks>
+    /// <paramref name="since"/> is the moment this build first ran: jobs from
+    /// before the node knew how to purge are left where the owner has always
+    /// seen them, rather than deleted in one sweep on the day of the update.
+    /// </remarks>
+    public IReadOnlyList<string> JobsToPurge(DateTimeOffset before, DateTimeOffset since, int limit = 50)
+    {
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT prompt_id FROM jobs
+             WHERE purged_at IS NULL
+               AND completed_at IS NOT NULL
+               AND completed_at < $before
+               AND completed_at >= $since
+             ORDER BY completed_at LIMIT $n
+            """;
+        command.Parameters.AddWithValue("$before", before.ToUnixTimeMilliseconds());
+        command.Parameters.AddWithValue("$since", since.ToUnixTimeMilliseconds());
+        command.Parameters.AddWithValue("$n", limit);
 
         var ids = new List<string>();
         using var reader = command.ExecuteReader();

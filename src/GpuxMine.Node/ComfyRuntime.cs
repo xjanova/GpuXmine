@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
+using GpuxMine.Protocol;
 
 namespace GpuxMine.Node;
 
@@ -17,25 +18,69 @@ public sealed record LocalReply(int Status, Dictionary<string, string> Headers, 
     }
 }
 
+/// <summary>
+/// The <c>stage</c> a refusal carries. aixman reads it to decide what to do
+/// with the worker and the job: every one of these means "not now, ask again",
+/// never "this node is broken".
+/// </summary>
+public static class ReadyStage
+{
+    /// <summary>The relay's answer when the node is not connected. The node itself never sends it.</summary>
+    public const string Offline = "offline";
+
+    /// <summary>The owner's rules say no right now: schedule, gaming, temperature, stopped.</summary>
+    public const string Paused = "paused";
+
+    /// <summary>No valid capability report, so no work at all until the machine is measured.</summary>
+    public const string Unassessed = "unassessed";
+
+    /// <summary>Already working: a customer's render, or the owner's own ComfyUI queue.</summary>
+    public const string Busy = "busy";
+
+    /// <summary>The owner pressed STOP. Finishing and handing over what it has, taking nothing new.</summary>
+    public const string Draining = "draining";
+}
+
 /// <summary>Why the node is not taking work this second, for the readiness answer and the UI.</summary>
-public sealed record AcceptDecision(bool Accept, string? Reason)
+/// <param name="Stage">What aixman is told — see <see cref="ReadyStage"/>. Only read when <paramref name="Accept"/> is false.</param>
+public sealed record AcceptDecision(bool Accept, string? Reason, string Stage = ReadyStage.Paused)
 {
     public static readonly AcceptDecision Yes = new(true, null);
 }
+
+/// <summary>A file ComfyUI wrote or was given, named the way its own API names it.</summary>
+/// <param name="Type"><c>output</c>, <c>input</c> or <c>temp</c> — which of ComfyUI's folders it lives in.</param>
+public sealed record ComfyFile(string Filename, string Subfolder, string Type);
 
 /// <summary>
 /// Everything the node does with a request that arrived down the tunnel.
 /// </summary>
 /// <remarks>
-/// Three of the paths aixman uses do not exist in ComfyUI at all — the rented
+/// <para>
+/// Some of the paths aixman uses do not exist in ComfyUI at all — the rented
 /// image serves them from a Python proxy that wraps it. A community node has no
 /// such wrapper, so the agent answers them itself and forwards the rest:
+/// </para>
 /// <list type="bullet">
 ///   <item><c>/aixman/ready</c> — can this node take a job (also where the
 ///     owner's schedule and "yield when I use the PC" are enforced)</item>
 ///   <item><c>/aixman/progress</c> — how far the running render is</item>
 ///   <item><c>/aixman/log</c> — the only window into a node that misbehaves</item>
+///   <item><c>/aixman/purge</c> — take a finished job's files and history off
+///     the owner's machine once aixman has copied the result away</item>
 /// </list>
+/// <para>
+/// Nothing else is forwarded unless it is on <see cref="TunnelAllowlist"/>.
+/// The tunnel ends in the owner's own ComfyUI, and a relay that predates the
+/// list would otherwise pass anything — ComfyUI-Manager's install routes
+/// included — straight through to it.
+/// </para>
+/// <para>
+/// New work (<c>POST /prompt</c>, <c>POST /upload/image</c>) is refused with
+/// exactly the answer <c>/aixman/ready</c> would give. A readiness probe is a
+/// snapshot, and the owner sitting down at the PC one second after it said yes
+/// must still stop the job.
+/// </para>
 /// </remarks>
 public sealed partial class ComfyRuntime : IAsyncDisposable
 {
@@ -67,6 +112,23 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
     /// </remarks>
     public Func<(Assessment.NodeAssessment? Report, string? Reason)>? AssessmentSource { get; set; }
 
+    /// <summary>
+    /// Whether the owner offers this kind of work. Null offers everything the
+    /// report says the machine can run.
+    /// </summary>
+    /// <remarks>
+    /// Applied to what readiness advertises, so an owner who unticked video in
+    /// Models &amp; Jobs is not listed as a video machine to the dispatcher.
+    /// </remarks>
+    public Func<string, bool>? OffersKind { get; set; }
+
+    /// <summary>
+    /// The node's own job ledger: which prompts came down the tunnel, what
+    /// inputs they used, and which have been purged. Without one, only prompts
+    /// this process saw submitted can be purged.
+    /// </summary>
+    public Storage.NodeStore? Ledger { get; set; }
+
     private readonly Lock _stateGate = new();
     private ProgressState _state = new();
     private readonly Dictionary<string, Dictionary<string, string>> _graphs = new(StringComparer.Ordinal);
@@ -76,7 +138,18 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
     /// <summary>Raised as jobs move through the local runtime, for the history and the UI.</summary>
     public event Action<JobEvent>? Job;
 
-    public sealed record JobEvent(string PromptId, JobStatus Status, int NodesTotal, string Kind, string? Filename, string? Error);
+    public sealed record JobEvent(string PromptId, JobStatus Status, int NodesTotal, string Kind, string? Filename, string? Error)
+    {
+        /// <summary>Files aixman uploaded that this prompt reads, on <see cref="JobStatus.Queued"/>; purged with it.</summary>
+        public IReadOnlyList<ComfyFile> Inputs { get; init; } = [];
+
+        /// <summary>
+        /// Raised again, for a job that was not yet on record when it first
+        /// happened, or settled from history rather than seen live. Recorded,
+        /// but already said once in the log.
+        /// </summary>
+        public bool Replayed { get; init; }
+    }
 
     private sealed class ProgressState
     {
@@ -90,6 +163,7 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
         public DateTimeOffset? SamplerEnd;
         public bool Done;
         public bool Failed;
+        public string? Error;
     }
 
     /// <param name="acceptGate">
@@ -112,57 +186,64 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
 
     public async Task<LocalReply> HandleAsync(string method, string pathAndQuery, Dictionary<string, string> headers, byte[] body, CancellationToken ct)
     {
+        // Deny by default, before anything is parsed or forwarded. The relay
+        // runs the same list, but a node talking to a relay that predates it
+        // is protected only by this line.
+        if (!TunnelAllowlist.IsAllowed(method, pathAndQuery, body))
+        {
+            NoteRefusal($"refused {method} {Clip(pathAndQuery)} — not on the tunnel allowlist");
+            return LocalReply.Json(403, new { error = TunnelAllowlist.DeniedError });
+        }
+
         string route = pathAndQuery.Split('?', 2)[0];
 
-        switch (route)
+        if (route.StartsWith("/aixman/", StringComparison.Ordinal))
         {
-            case "/aixman/ready":
-                return await ReadinessAsync(ct);
-            case "/aixman/progress":
-                return LocalReply.Json(200, Snapshot());
-            case "/aixman/log":
-                lock (_stateGate) return LocalReply.Json(200, new { agent = string.Join('\n', _recentLog) });
+            // The agent's own surface. None of it is ComfyUI's, so none of it
+            // is forwarded — an unknown name is a 404 here, not a probe of
+            // whatever the owner's ComfyUI happens to answer.
+            switch (route)
+            {
+                case "/aixman/ready":
+                    return await ReadinessAsync(ct);
+                case "/aixman/progress":
+                    return LocalReply.Json(200, Snapshot());
+                case "/aixman/log":
+                    lock (_stateGate) return LocalReply.Json(200, new { agent = string.Join('\n', _recentLog) });
+                case "/aixman/purge":
+                    return method == "POST"
+                        ? await PurgeRequestAsync(pathAndQuery, body, ct)
+                        : LocalReply.Json(405, new { error = "method-not-allowed" });
+                default:
+                    return LocalReply.Json(404, new { error = "unknown-route" });
+            }
         }
 
         if (method == "POST" && route == "/prompt")
-        {
-            (body, int nodeCount, string kind) = RewritePrompt(body);
-            LocalReply reply = await ForwardAsync(method, pathAndQuery, headers, body, ct);
-            AnnounceSubmission(reply, nodeCount, kind);
-            return reply;
-        }
+            return await SubmitAsync(method, pathAndQuery, headers, body, ct);
+
+        if (method == "POST" && route == "/upload/image")
+            return await UploadAsync(method, pathAndQuery, headers, body, ct);
 
         return await ForwardAsync(method, pathAndQuery, headers, body, ct);
     }
 
     private async Task<LocalReply> ReadinessAsync(CancellationToken ct)
     {
-        // Assessment before everything else. A paused node is one that will be
-        // back in a minute; an unassessed one must not be dispatched to at all,
-        // however willing it says it is.
-        Assessment.NodeAssessment? report = null;
-        if (AssessmentSource is { } askAssessment)
-        {
-            string? why;
-            (report, why) = askAssessment();
-            if (report is null)
-                return LocalReply.Json(503, new { ready = false, stage = "unassessed", reason = why });
-        }
-
-        AcceptDecision decision = _acceptGate();
-        if (!decision.Accept)
-        {
-            // `stage`, not `failed`: aixman reads this as "warming, check again"
-            // and keeps the worker. The owner sitting down at their PC is not a
-            // fault in the node.
-            return LocalReply.Json(503, new { ready = false, stage = "paused", reason = decision.Reason });
-        }
+        var (refused, report) = await GateAsync(submitting: false, ct);
+        if (refused is not null) return refused;
 
         try
         {
-            using var response = await _http.GetAsync($"{_options.ComfyUrl}/system_stats", ct);
+            using var response = await _http.GetAsync($"{_options.ComfyUrl.TrimEnd('/')}/system_stats", ct);
             if (!response.IsSuccessStatusCode)
                 return LocalReply.Json(503, new { ready = false, stage = $"comfyui HTTP {(int)response.StatusCode}" });
+
+            // The card torch sees right now, for the host to hold the report
+            // against. Free: this answer was being read anyway.
+            NoteDevice(await response.Content.ReadAsStringAsync(ct));
+
+            var offered = report?.Capabilities.Where(c => c.CanRun && Offers(c.Kind)).ToArray() ?? [];
 
             // `auth: true` tells aixman the bearer token is being enforced. It is —
             // by the relay, before this request was ever put on the tunnel. Saying
@@ -174,6 +255,7 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
                 ready = true,
                 auth = true,
                 listening = _listening,
+                queue_remaining = QueueRemaining,
                 assessment = report is null ? null : new
                 {
                     score = report.Score,
@@ -181,23 +263,188 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
                     gpu = report.GpuName,
                     vram_mb = report.VramTotalMb,
                     measured_at = report.MeasuredAt,
-                    can_run = report.Capabilities.Where(c => c.CanRun).Select(c => c.Kind).ToArray(),
+                    // What the owner offers, not only what the card can do: a
+                    // kind unticked in Models & Jobs is left out of all four.
+                    can_run = offered.Select(c => c.Kind).ToArray(),
                     // `can_run` says the machine can do the work; `lanes` says
                     // whether anybody should be sitting there watching it. A
                     // dispatcher with only the first will eventually give a
                     // four-minute card to a customer expecting twelve seconds.
-                    lanes = report.Capabilities.Where(c => c.CanRun)
-                        .ToDictionary(c => c.Kind, c => c.Lane),
-                    provisional = report.Capabilities.Where(c => c.Provisional)
+                    lanes = offered.ToDictionary(c => c.Kind, c => c.Lane),
+                    provisional = report.Capabilities.Where(c => c.Provisional && Offers(c.Kind))
                         .Select(c => c.Kind).ToArray(),
-                    seconds_per_unit = report.Capabilities.Where(c => c.CanRun)
-                        .ToDictionary(c => c.Kind, c => c.SecondsPerUnit),
+                    seconds_per_unit = offered.ToDictionary(c => c.Kind, c => c.SecondsPerUnit),
                 },
             });
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
             return LocalReply.Json(503, new { ready = false, stage = "comfyui unreachable", detail = ex.Message });
+        }
+    }
+
+    private bool Offers(string kind) => OffersKind?.Invoke(kind) ?? true;
+
+    /// <summary>
+    /// The one decision behind <c>/aixman/ready</c>, <c>POST /prompt</c> and
+    /// <c>POST /upload/image</c>: null when new work may start, otherwise the
+    /// refusal to send back.
+    /// </summary>
+    /// <remarks>
+    /// In order of how long the answer is likely to hold. An unassessed node
+    /// must not be dispatched to at all, however willing it says it is; a
+    /// paused one will be back in a minute; a busy one as soon as its render
+    /// ends. <c>stage</c>, not <c>failed</c>: aixman reads every one of these as
+    /// "warming, check again" and keeps the worker. The owner sitting down at
+    /// their PC is not a fault in the node.
+    /// </remarks>
+    private async Task<(LocalReply? Refused, Assessment.NodeAssessment? Report)> GateAsync(bool submitting, CancellationToken ct)
+    {
+        Assessment.NodeAssessment? report = null;
+        if (AssessmentSource is { } askAssessment)
+        {
+            string? why;
+            (report, why) = askAssessment();
+            if (report is null)
+                return (Refusal(503, ReadyStage.Unassessed, why), null);
+        }
+
+        AcceptDecision decision = _acceptGate();
+        if (!decision.Accept)
+            return (Refusal(503, decision.Stage, decision.Reason), report);
+
+        // One customer render at a time. A second prompt behind the first
+        // would sit in ComfyUI's queue with nobody measuring it, and time out
+        // as a failure of this node when it was never started. A render still
+        // executing counts even when nothing tracks it as a customer's any
+        // more — the card is taken either way.
+        if (HasTunnelWork || IsBusy)
+        {
+            return (Refusal(submitting ? 409 : 503, ReadyStage.Busy,
+                "เครื่องกำลังทำงานของลูกค้าอยู่ — รับงานถัดไปเมื่อเสร็จ"), report);
+        }
+
+        // The owner's own work counts too. Their batch is theirs to run, and a
+        // customer's job queued behind it would wait out its whole timeout.
+        if (await ReadQueueAsync(ct) is { } queue && OwnersQueued(queue) is > 0 and var owners)
+        {
+            return (LocalReply.Json(503, new
+            {
+                ready = false,
+                stage = ReadyStage.Busy,
+                reason = $"ComfyUI ในเครื่องมีงานค้างในคิว {owners} งาน",
+                queue_remaining = queue.Count,
+            }), report);
+        }
+
+        return (null, report);
+    }
+
+    private static LocalReply Refusal(int status, string stage, string? reason) =>
+        LocalReply.Json(status, new { ready = false, stage, reason });
+
+    /// <summary>
+    /// <c>POST /prompt</c>: the gate, then a one-at-a-time reservation, then
+    /// ComfyUI.
+    /// </summary>
+    /// <remarks>
+    /// The reservation is taken under the lock after the gate, not merely
+    /// checked, because aixman's own one-job guard is not atomic with its
+    /// claim: two submissions can arrive in the same second, and both would
+    /// pass a check that only looked.
+    /// </remarks>
+    private async Task<LocalReply> SubmitAsync(string method, string pathAndQuery, Dictionary<string, string> headers, byte[] body, CancellationToken ct)
+    {
+        var (refused, _) = await GateAsync(submitting: true, ct);
+        if (refused is not null)
+        {
+            NoteRefusal($"refused a job: {StageOf(refused)}");
+            return refused;
+        }
+
+        lock (_stateGate)
+        {
+            if (_submitting > 0 || _tunnelPrompts.Count > 0)
+                return Refusal(409, ReadyStage.Busy, "เครื่องกำลังทำงานของลูกค้าอยู่ — รับงานถัดไปเมื่อเสร็จ");
+            _submitting++;
+        }
+
+        try
+        {
+            (byte[] rewritten, int nodeCount, string kind, HashSet<string> inputs) = RewritePrompt(body);
+            LocalReply reply = await ForwardAsync(method, pathAndQuery, headers, rewritten, ct);
+
+            string? promptId = PromptIdOf(reply);
+            if (promptId is null) return reply;
+
+            IReadOnlyList<ComfyFile> used = ClaimUploads(promptId, inputs);
+            bool started;
+            JobEvent? ended = null;
+            lock (_stateGate)
+            {
+                // The ledger is the lasting record; this only covers a node
+                // without one, so it is bounded rather than kept forever.
+                if (_known.Count > 5000) _known.Clear();
+                _known.Add(promptId);
+                if (_graphs.Remove("", out var parked)) _graphs[promptId] = parked;
+
+                // ComfyUI can start a prompt — and finish a fully cached one —
+                // before its answer to the submission has been read here: the
+                // progress socket is a separate connection and waits for
+                // nobody. Those events found no job to update, so they are
+                // replayed below, after the one that creates it.
+                started = _state.PromptId == promptId;
+                if (started && (_state.Done || _state.Failed))
+                {
+                    _lastTunnelFinished = DateTimeOffset.UtcNow;
+                    ended = new JobEvent(promptId, _state.Failed ? JobStatus.Failed : JobStatus.Completed, 0, "job",
+                        _lastOutput.GetValueOrDefault(promptId), _state.Failed ? _state.Error ?? "execution_error" : null)
+                    { Replayed = true };
+                }
+                else
+                {
+                    // Tracked before the reservation is let go, so there is no
+                    // instant in which neither says "busy".
+                    _tunnelPrompts[promptId] = DateTimeOffset.UtcNow;
+                }
+            }
+
+            Job?.Invoke(new JobEvent(promptId, JobStatus.Queued, nodeCount, kind, null, null) { Inputs = used });
+            if (started) Job?.Invoke(new JobEvent(promptId, JobStatus.Running, nodeCount, kind, null, null) { Replayed = true });
+            if (ended is not null) Job?.Invoke(ended);
+            return reply;
+        }
+        finally
+        {
+            lock (_stateGate) _submitting--;
+        }
+    }
+
+    private static string StageOf(LocalReply reply)
+    {
+        try
+        {
+            JsonNode? root = JsonNode.Parse(reply.Body);
+            return $"{root?["stage"]?.GetValue<string>()} — {root?["reason"]?.GetValue<string>()}";
+        }
+        catch
+        {
+            return $"HTTP {reply.Status}";
+        }
+    }
+
+    private static string? PromptIdOf(LocalReply reply)
+    {
+        if (reply.Status is < 200 or >= 300) return null;
+        try
+        {
+            return JsonNode.Parse(reply.Body)?["prompt_id"]?.GetValue<string>();
+        }
+        catch
+        {
+            // ComfyUI answered something that is not its usual JSON; the caller
+            // already has the raw reply, and the history simply lacks this one.
+            return null;
         }
     }
 
@@ -242,18 +489,35 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
     /// Points the submission's progress events at us and remembers the graph's
     /// shape, which is what turns raw sampler steps into a percentage.
     /// </summary>
-    private (byte[] Body, int NodeCount, string Kind) RewritePrompt(byte[] body)
+    /// <remarks>
+    /// Also collects every plain string the graph's nodes take as input, which
+    /// is how a file aixman uploaded a moment ago is tied to the prompt that
+    /// reads it — and purged with it.
+    /// </remarks>
+    private (byte[] Body, int NodeCount, string Kind, HashSet<string> Inputs) RewritePrompt(byte[] body)
     {
+        var inputs = new HashSet<string>(StringComparer.Ordinal);
         try
         {
             JsonNode? root = JsonNode.Parse(body);
-            if (root is not JsonObject submitted) return (body, 0, "job");
+            if (root is not JsonObject submitted) return (body, 0, "job", inputs);
 
             var classes = new Dictionary<string, string>(StringComparer.Ordinal);
             if (submitted["prompt"] is JsonObject graph)
             {
                 foreach (var node in graph)
-                    classes[node.Key] = node.Value?["class_type"]?.GetValue<string>() ?? "";
+                {
+                    classes[node.Key] = (node.Value?["class_type"] as JsonValue)?.TryGetValue(out string? cls) == true ? cls : "";
+
+                    if (node.Value?["inputs"] is JsonObject values)
+                    {
+                        foreach (var input in values)
+                        {
+                            if (input.Value is JsonValue v && v.TryGetValue(out string? text) && text.Length is > 0 and <= 512)
+                                inputs.Add(text);
+                        }
+                    }
+                }
 
                 lock (_stateGate)
                 {
@@ -264,14 +528,14 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
             }
 
             submitted["client_id"] = _progressClientId;
-            return (Encoding.UTF8.GetBytes(submitted.ToJsonString()), classes.Count, KindOf(classes.Values));
+            return (Encoding.UTF8.GetBytes(submitted.ToJsonString()), classes.Count, KindOf(classes.Values), inputs);
         }
         catch (Exception ex)
         {
             // Forward it exactly as it came — the render still runs, only the
             // percentage goes unreported. Never fail a job over telemetry.
             Note($"could not rewrite /prompt client_id: {ex.Message}");
-            return (body, 0, "job");
+            return (body, 0, "job", inputs);
         }
     }
 
@@ -286,30 +550,19 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
         return "job";
     }
 
-    private void AnnounceSubmission(LocalReply reply, int nodeCount, string kind)
-    {
-        if (reply.Status is < 200 or >= 300) return;
-        try
-        {
-            string? promptId = JsonNode.Parse(reply.Body)?["prompt_id"]?.GetValue<string>();
-            if (promptId is null) return;
-            Job?.Invoke(new JobEvent(promptId, JobStatus.Queued, nodeCount, kind, null, null));
-        }
-        catch
-        {
-            // ComfyUI answered something that is not its usual JSON; the caller
-            // already has the raw reply, and the history simply lacks this one.
-        }
-    }
-
     // --------------------------------------------------------------- progress
 
     /// <summary>
-    /// True while a render is in flight. The updater asks before replacing the
+    /// True while a render is executing. The updater asks before replacing the
     /// program: applying an update kills this process, and a job abandoned
     /// half-rendered is a job the customer paid for and the node does not get
     /// paid for.
     /// </summary>
+    /// <remarks>
+    /// Narrower than <see cref="IsWorking"/>: a prompt that has been accepted
+    /// but not yet started is not "busy" by this measure. Ask
+    /// <see cref="IsWorking"/> before handing anything over.
+    /// </remarks>
     public bool IsBusy
     {
         get
@@ -388,44 +641,69 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
     /// </remarks>
     public async Task<(bool Done, bool Success, string? Filename, string? Error)> QueryHistoryAsync(string promptId, CancellationToken ct)
     {
+        HistoryEntry entry = await HistoryAsync(promptId, ct);
+        return entry.State == HistoryState.Done
+            ? (true, entry.Success, entry.Filename, entry.Error)
+            : (false, false, null, null);
+    }
+
+    /// <summary>What ComfyUI's history says about one prompt, with "could not ask" kept apart from "not there".</summary>
+    /// <remarks>
+    /// The difference matters: ComfyUI writes a history entry only when a
+    /// prompt finishes, so a prompt that is absent is either still in the
+    /// queue or lost — and a node that treated "ComfyUI did not answer" the
+    /// same way would fail jobs every time ComfyUI was slow.
+    /// </remarks>
+    public async Task<HistoryEntry> HistoryAsync(string promptId, CancellationToken ct)
+    {
         try
         {
             using var response = await _http.GetAsync($"{_options.ComfyUrl.TrimEnd('/')}/history/{Uri.EscapeDataString(promptId)}", ct);
-            if (!response.IsSuccessStatusCode) return (false, false, null, null);
+            if (!response.IsSuccessStatusCode) return HistoryEntry.Unknown;
 
             JsonNode? root = JsonNode.Parse(await response.Content.ReadAsStringAsync(ct));
-            JsonNode? entry = root?[promptId];
-            if (entry is null) return (false, false, null, null);
+            if (root is not JsonObject) return HistoryEntry.Unknown;
+            JsonNode? entry = root[promptId];
+            if (entry is null) return new HistoryEntry(HistoryState.Absent);
 
-            string? statusStr = entry["status"]?["status_str"]?.GetValue<string>();
-            bool completed = entry["status"]?["completed"]?.GetValue<bool>() ?? false;
-
-            if (statusStr == "error")
-                return (true, false, null, "ComfyUI reported an execution error");
-
-            if (!completed && statusStr != "success") return (false, false, null, null);
+            string? statusStr = (entry["status"]?["status_str"] as JsonValue)?.TryGetValue(out string? s) == true ? s : null;
+            bool completed = (entry["status"]?["completed"] as JsonValue)?.TryGetValue(out bool c) == true && c;
 
             // Outputs are keyed by node id; any of them may hold the file.
-            string? filename = null;
+            var files = new List<ComfyFile>();
             if (entry["outputs"] is JsonObject outputs)
             {
                 foreach (var node in outputs)
                 {
-                    foreach (string bucket in (string[])["images", "gifs", "videos", "audio"])
+                    if (node.Value is not JsonObject buckets) continue;
+                    foreach (var bucket in buckets)
                     {
-                        if (node.Value?[bucket] is JsonArray items && items.Count > 0)
+                        if (bucket.Value is not JsonArray items) continue;
+                        foreach (JsonNode? item in items)
                         {
-                            filename ??= items[0]?["filename"]?.GetValue<string>();
+                            if (item is not JsonObject file) continue;
+                            if ((file["filename"] as JsonValue)?.TryGetValue(out string? name) != true || string.IsNullOrEmpty(name)) continue;
+                            string subfolder = (file["subfolder"] as JsonValue)?.TryGetValue(out string? sub) == true ? sub ?? "" : "";
+                            string type = (file["type"] as JsonValue)?.TryGetValue(out string? t) == true ? t ?? "output" : "output";
+                            files.Add(new ComfyFile(name, subfolder, type));
                         }
                     }
                 }
             }
 
-            return (true, true, filename, null);
+            if (statusStr == "error")
+                return new HistoryEntry(HistoryState.Done, Success: false, Error: "ComfyUI reported an execution error", Files: files);
+
+            if (!completed && statusStr != "success") return new HistoryEntry(HistoryState.Pending, Files: files);
+
+            // The first saved file is what the queue screen shows; outputs the
+            // user never sees (a preview's temp file) come last in practice.
+            string? filename = files.FirstOrDefault(f => f.Type == "output")?.Filename ?? files.FirstOrDefault()?.Filename;
+            return new HistoryEntry(HistoryState.Done, Success: true, Filename: filename, Files: files);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
-            return (false, false, null, null);
+            return HistoryEntry.Unknown;
         }
     }
 
@@ -482,7 +760,7 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
         }
     }
 
-    private void Consume(string json)
+    internal void Consume(string json)
     {
         JsonNode? root;
         try { root = JsonNode.Parse(json); }
@@ -516,6 +794,11 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
                         string oldest = _graphs.Keys.First(k => k != promptId && k != "");
                         _graphs.Remove(oldest);
                     }
+
+                    // The same leak, one filename per job. Only the one being
+                    // rendered matters: execution_success reads it and is done.
+                    foreach (string old in _lastOutput.Keys.Where(k => k != promptId).ToArray())
+                        _lastOutput.Remove(old);
 
                     var g0 = _graphs.GetValueOrDefault(promptId);
                     announce = new JobEvent(promptId, JobStatus.Running, g0?.Count ?? 0, g0 is null ? "job" : KindOf(g0.Values), null, null);
@@ -570,7 +853,10 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
                 {
                     _state.Done = true;
                     if (_state.PromptId is { } id)
+                    {
+                        FinishTunnel(id);
                         announce = new JobEvent(id, JobStatus.Completed, 0, "job", _lastOutput.GetValueOrDefault(id), null);
+                    }
                     break;
                 }
 
@@ -581,9 +867,12 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
                     _state.Failed = true;
                     string detail = data?.ToJsonString() ?? "";
                     Note($"render failed: {detail[..Math.Min(300, detail.Length)]}");
+                    _state.Error = (data?["exception_message"] as JsonValue)?.TryGetValue(out string? message) == true ? message : type;
                     if (_state.PromptId is { } id)
-                        announce = new JobEvent(id, JobStatus.Failed, 0, "job", null,
-                            data?["exception_message"]?.GetValue<string>() ?? type);
+                    {
+                        FinishTunnel(id);
+                        announce = new JobEvent(id, JobStatus.Failed, 0, "job", null, _state.Error);
+                    }
                     break;
                 }
             }

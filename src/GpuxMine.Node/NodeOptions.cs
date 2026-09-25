@@ -30,6 +30,35 @@ public sealed record NodeOptions
     /// <summary>Where the local inference server listens.</summary>
     public string ComfyUrl { get; init; } = "http://127.0.0.1:8188";
 
+    /// <summary>
+    /// The folder ComfyUI runs from (the one holding <c>main.py</c>, or its
+    /// <c>--base-directory</c>). Only needed when the node cannot work it out
+    /// from ComfyUI itself — see <see cref="ComfyRuntime.FoldersAsync"/>.
+    /// </summary>
+    /// <remarks>
+    /// Used for one thing: deleting a customer's job files once aixman has
+    /// them. A node that cannot find the folder still clears the prompt from
+    /// ComfyUI's history, and says in the log which files it had to leave.
+    /// </remarks>
+    public string? ComfyBaseDirectory { get; init; }
+
+    /// <summary>Overrides <c>{ComfyBaseDirectory}/output</c>, as ComfyUI's own <c>--output-directory</c> does.</summary>
+    public string? ComfyOutputDirectory { get; init; }
+
+    /// <summary>Overrides <c>{ComfyBaseDirectory}/input</c>, as ComfyUI's own <c>--input-directory</c> does.</summary>
+    public string? ComfyInputDirectory { get; init; }
+
+    /// <summary>
+    /// Hours after a customer's job ends before the node purges it on its own,
+    /// if aixman has not already. 0 leaves it entirely to aixman.
+    /// </summary>
+    /// <remarks>
+    /// The fallback for an aixman that predates <c>/aixman/purge</c>, or one
+    /// that could not reach the node at the moment it tried. aixman gives up
+    /// on a job long before this, so nothing it could still want is deleted.
+    /// </remarks>
+    public int PurgeAfterHours { get; init; } = 6;
+
     /// <summary>Serve a stand-in ComfyUI in-process, to exercise the tunnel without a GPU.</summary>
     public bool Mock { get; init; }
 

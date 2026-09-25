@@ -117,6 +117,45 @@ public sealed class NodeAssessment
     /// <summary>Ties this report to the machine it was measured on — a report cannot be moved to a slower PC.</summary>
     [JsonPropertyName("hardwareHash")] public string? HardwareHash { get; set; }
 
+    /// <summary>
+    /// Ties this report to the card it was measured on: <see cref="GpuHashOf"/>
+    /// of the name and memory torch reported. Null on reports from before it
+    /// existed, which are then held to <see cref="HardwareHash"/> alone.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="HardwareHash"/> is built from the CPU and the board, so a
+    /// card swapped in the same PC — up or down — kept its old report, and its
+    /// old lanes, for up to a month.
+    /// </remarks>
+    [JsonPropertyName("gpuHash")] public string? GpuHash { get; set; }
+
+    /// <summary>
+    /// A stable hash of a card as torch names it, or null when there is no
+    /// card to name.
+    /// </summary>
+    /// <remarks>
+    /// torch's device name carries more than the card —
+    /// <c>cuda:0 NVIDIA GeForce GTX 1070 Ti : cudaMallocAsync</c> — and the
+    /// allocator suffix changes with ComfyUI's launch flags. Only the model
+    /// name is kept, so a flag change is not mistaken for a new card. Memory is
+    /// rounded to half a gigabyte for the same reason: the figure is the card's,
+    /// but not every driver reports it to the byte.
+    /// </remarks>
+    public static string? GpuHashOf(string? torchName, int vramMb)
+    {
+        if (string.IsNullOrWhiteSpace(torchName) || vramMb <= 0) return null;
+
+        string name = torchName.Trim();
+        if (name.StartsWith("cuda:", StringComparison.OrdinalIgnoreCase) && name.IndexOf(' ') is > 0 and var space)
+            name = name[(space + 1)..];
+        if (name.IndexOf(" : ", StringComparison.Ordinal) is > 0 and var allocator)
+            name = name[..allocator];
+
+        string key = $"{name.Trim().ToLowerInvariant()}|{Math.Round(vramMb / 512.0)}";
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(key)))
+            .ToLowerInvariant()[..32];
+    }
+
     // --- whether the host can keep the card fed ---
 
     /// <summary>Watts the card is allowed to draw, and what it is rated for. 0 when unread.</summary>
@@ -198,16 +237,25 @@ public sealed class NodeAssessment
     /// </summary>
     public static readonly TimeSpan MaxAge = TimeSpan.FromDays(30);
 
-    public bool IsUsable(string agentVersion, string? hardwareHash) =>
+    /// <param name="gpuHash">
+    /// The card in the machine now, as <see cref="GpuHashOf"/> hashes it. Null
+    /// when nobody could ask — ComfyUI not answering says nothing about the
+    /// card, and must not throw away a good report.
+    /// </param>
+    public bool IsUsable(string agentVersion, string? hardwareHash, string? gpuHash = null) =>
         Failed is null
         && Version == SchemaVersion
         && DateTimeOffset.UtcNow - MeasuredAt < MaxAge
         // A new build may measure differently; re-run rather than carry the old
         // number forward under a version it was not taken on.
         && AgentVersion == agentVersion
-        // Catches the report being copied onto another machine, and the card
-        // being swapped under a node that was already enrolled.
-        && (hardwareHash is null || HardwareHash is null || HardwareHash == hardwareHash);
+        // Catches the report being copied onto another machine.
+        && (hardwareHash is null || HardwareHash is null || HardwareHash == hardwareHash)
+        // And the card being swapped under a node that was already enrolled.
+        && !GpuChanged(gpuHash);
+
+    /// <summary>The card now is known, the report names one, and they differ.</summary>
+    public bool GpuChanged(string? gpuHash) => gpuHash is not null && GpuHash is not null && GpuHash != gpuHash;
 
     public Capability? For(string kind) => Capabilities.FirstOrDefault(c => c.Kind == kind);
 
