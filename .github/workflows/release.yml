@@ -57,6 +57,21 @@ jobs:
           "version=$version" >> $env:GITHUB_OUTPUT
           Write-Host "building $version"
 
+      # This client refuses POST /prompt with 503 {stage} whenever its owner's
+      # rules say no. aixman from before feat/sharing-complete counts that as a
+      # failed attempt and never re-probes a `ready` row, so with two attempts a
+      # job sent to a paused or busy node fails and is refunded within seconds.
+      # A tag reaches every node by auto-update and cannot be taken back, so the
+      # release waits until someone has checked aixman in production requeues on
+      # a stage — and said so by setting the repository variable
+      # AIXMAN_C5_LIVE=true (docs/RELAY-DEPLOY.md, checklist item C0).
+      - name: Check the pool requeues refused jobs
+        shell: pwsh
+        run: |
+          if ('${{ vars.AIXMAN_C5_LIVE }}' -ne 'true') {
+            throw "Set the repository variable AIXMAN_C5_LIVE=true once aixman feat/sharing-complete is live in production (RELAY-DEPLOY.md, C0). Releasing before it fails every job sent to a paused or busy node."
+          }
+
       # The solution names the test projects (tests/*), so this `dotnet test`
       # really runs them — before tests/ existed it ran nothing and passed. A
       # red test stops the release here, before anything is published.
