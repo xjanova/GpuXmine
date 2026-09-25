@@ -1248,6 +1248,62 @@ public class ComfyRuntimeTests
         Assert.Equal(0, await offline.PurgeBenchmarksAsync(CancellationToken.None));
     }
 
+    [Fact]
+    public async Task A_ComfyUI_gone_for_good_does_not_keep_old_benchmarks_forever()
+    {
+        await using var offline = new ComfyRuntime(new NodeOptions { ComfyUrl = "http://127.0.0.1:9" }, new NullLog());
+        offline.NoteBenchmark("bench-two-days-old", DateTimeOffset.UtcNow - TimeSpan.FromDays(2));
+        offline.NoteBenchmark("bench-just-now");
+
+        Assert.Equal(0, await offline.PurgeBenchmarksAsync(CancellationToken.None));
+
+        // History cannot be read at all, yet what has waited out its day is let go;
+        // the fresh one is kept for when ComfyUI comes back.
+        Assert.Equal(1, offline.PendingBenchmarks);
+    }
+
+    [Fact]
+    public async Task A_ComfyUI_that_hangs_holds_a_clearing_pass_no_longer_than_its_limit()
+    {
+        await using var comfy = await FakeComfy.StartAsync();
+        comfy.Hangs.Add("GET /queue");
+        comfy.Hangs.Add("GET /history");
+        await using var runtime = new ComfyRuntime(new NodeOptions { ComfyUrl = comfy.Url }, new NullLog())
+        {
+            BenchmarkPassLimit = TimeSpan.FromMilliseconds(500),
+        };
+        runtime.NoteBenchmark("bench-hung");
+
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        Assert.Equal(0, await runtime.PurgeBenchmarksAsync(CancellationToken.None));
+
+        // Not the 150 s HTTP timeout, and kept for the next pass rather than dropped.
+        Assert.True(clock.Elapsed < TimeSpan.FromSeconds(10), $"took {clock.Elapsed}");
+        Assert.Equal(1, runtime.PendingBenchmarks);
+    }
+
+    [Fact]
+    public async Task A_benchmark_ComfyUI_has_not_queued_yet_is_waited_for_and_a_refused_one_let_go()
+    {
+        await using var comfy = await FakeComfy.StartAsync();
+        await using var runtime = new ComfyRuntime(new NodeOptions { ComfyUrl = comfy.Url }, new NullLog());
+
+        // Handed over by an assessment cancelled with its POST /prompt still in flight:
+        // ComfyUI has no record of it yet, and may be about to write its image.
+        runtime.NoteBenchmark("bench-in-flight");
+        // Minutes old and still unknown to ComfyUI: refused, or lost with a restart.
+        runtime.NoteBenchmark("bench-refused", DateTimeOffset.UtcNow - TimeSpan.FromMinutes(5));
+
+        Assert.Equal(0, await runtime.PurgeBenchmarksAsync(CancellationToken.None));
+        Assert.Equal(1, runtime.PendingBenchmarks);
+
+        // Once ComfyUI does write it, the next pass takes it.
+        comfy.Finished("bench-in-flight", "gpuxmine_assess_00011_.png");
+        await runtime.PurgeBenchmarksAsync(CancellationToken.None);
+        Assert.Contains("bench-in-flight", comfy.HistoryDeletes);
+        Assert.Equal(0, runtime.PendingBenchmarks);
+    }
+
     [Theory]
     [InlineData("", "a.png", true)]
     [InlineData("sub/dir", "a.png", true)]

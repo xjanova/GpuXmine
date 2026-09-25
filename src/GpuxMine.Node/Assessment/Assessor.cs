@@ -510,7 +510,13 @@ public sealed class Assessor(
 
         string body = await submit.Content.ReadAsStringAsync(ct);
         if (!submit.IsSuccessStatusCode)
+        {
+            // Refused outright: ComfyUI queued nothing, so nothing of it will be
+            // written to clear. Only an answer that never came is handed over
+            // unknown, and waited for.
+            _sent.RemoveAt(noted);
             throw new InvalidOperationException($"reference workload rejected (HTTP {(int)submit.StatusCode}): {body[..Math.Min(200, body.Length)]}");
+        }
 
         string promptId = JsonNode.Parse(body)?["prompt_id"]?.GetValue<string>()
             ?? throw new InvalidOperationException("ComfyUI returned no prompt_id for the reference workload");

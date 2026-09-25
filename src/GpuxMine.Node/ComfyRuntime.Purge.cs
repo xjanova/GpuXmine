@@ -435,6 +435,18 @@ public sealed partial class ComfyRuntime
     /// </summary>
     private static readonly TimeSpan BenchmarkWaitedFor = TimeSpan.FromDays(1);
 
+    /// <summary>How long a benchmark prompt ComfyUI has no record of is still waited for.</summary>
+    private static readonly TimeSpan BenchmarkGoneGrace = TimeSpan.FromMinutes(2);
+
+    /// <summary>The most one clearing pass may take out of the reconcile loop.</summary>
+    internal TimeSpan BenchmarkPassLimit { get; set; } = TimeSpan.FromSeconds(20);
+
+    /// <summary>Benchmark prompts still waiting to be cleared, for tests.</summary>
+    internal int PendingBenchmarks
+    {
+        get { lock (_stateGate) return _benchmarks.Count; }
+    }
+
     /// <summary>
     /// A prompt the node's own assessment sent, so what it wrote can be
     /// cleared away. Handed over once the run is over, never while it is
@@ -492,7 +504,16 @@ public sealed partial class ComfyRuntime
         await _benchmarkPass.WaitAsync(ct);
         try
         {
-            return await PurgeBenchmarksOnceAsync(ct);
+            // Bounded: it shares the reconcile loop, and a ComfyUI that takes
+            // the connection and then hangs would hold every pass for the full
+            // HTTP timeout. What it did not get to is asked again next pass.
+            using var pass = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            pass.CancelAfter(BenchmarkPassLimit);
+            return await PurgeBenchmarksOnceAsync(pass.Token);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            return 0;
         }
         finally
         {
@@ -524,14 +545,27 @@ public sealed partial class ComfyRuntime
             bool expired = DateTimeOffset.UtcNow - sentAt > BenchmarkWaitedFor;
             HistoryEntry entry = await HistoryAsync(promptId, ct);
 
-            // ComfyUI is not answering: every other one would fail the same way.
-            if (entry.State == HistoryState.Unknown) break;
+            if (entry.State == HistoryState.Unknown)
+            {
+                // ComfyUI is not answering: every other one would fail the same
+                // way. What has waited out its day is let go all the same — a
+                // ComfyUI removed or moved for good must not keep this list,
+                // and a history read every pass, alive for the life of the node.
+                foreach (var (id, at) in pending)
+                    if (DateTimeOffset.UtcNow - at > BenchmarkWaitedFor) ForgetBenchmark(id);
+                break;
+            }
 
             if (entry.State != HistoryState.Done)
             {
                 // No entry and not in the queue: refused, or lost with a
-                // ComfyUI restart. Nothing of it is on disk to clear.
-                bool gone = entry.State == HistoryState.Absent && queue is not null && !queue.PromptIds.Contains(promptId);
+                // ComfyUI restart. Nothing of it is on disk to clear. Not
+                // judged in the first minutes: an assessment cancelled with its
+                // POST /prompt still in flight hands the id over before
+                // ComfyUI has queued it, and letting it go then would leave the
+                // image it is about to write.
+                bool gone = entry.State == HistoryState.Absent && queue is not null && !queue.PromptIds.Contains(promptId)
+                    && DateTimeOffset.UtcNow - sentAt > BenchmarkGoneGrace;
                 if (gone || expired) ForgetBenchmark(promptId);
                 continue;
             }
@@ -697,12 +731,23 @@ public sealed partial class ComfyRuntime
         }
         catch (Exception ex)
         {
-            // The ledger is how purge tells a customer's prompt from the
-            // owner's. Unreadable means "not known", which touches nothing.
-            Note($"ledger unreadable during purge: {ex.Message}");
+            // The ledger is how the node tells a customer's prompt from the
+            // owner's — for a purge, and for every readiness probe that finds
+            // work in ComfyUI's queue. Unreadable means "not known", which
+            // touches nothing. Said once a minute at most: probes come often.
+            long now = Environment.TickCount64;
+            long last = Interlocked.Read(ref _ledgerUnreadableNotedAt);
+            if (last == 0 || now - last >= 60_000)
+            {
+                if (Interlocked.CompareExchange(ref _ledgerUnreadableNotedAt, now, last) == last)
+                    Note($"ledger unreadable, its prompts are treated as unknown: {ex.Message}");
+            }
             return default;
         }
     }
+
+    /// <summary><see cref="Environment.TickCount64"/> when an unreadable ledger was last reported; 0 = never.</summary>
+    private long _ledgerUnreadableNotedAt;
 
     private static string? PromptIdFromBody(byte[] body)
     {

@@ -1175,11 +1175,6 @@ public sealed partial class NodeHost : IAsyncDisposable
             try
             {
                 await ReconcileOnceAsync(ct);
-
-                // A benchmark pass that ran out the assessment's clock finishes
-                // in ComfyUI later; its image is cleared here once it has. Free
-                // when there is none: nothing is asked of ComfyUI.
-                await Runtime.PurgeBenchmarksAsync(ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -1190,6 +1185,24 @@ public sealed partial class NodeHost : IAsyncDisposable
                 // One bad pass is not a reason to stop reconciling for the
                 // rest of the process's life.
                 Log.Warn($"[warn] ledger reconcile failed this pass: {ex.Message}");
+            }
+
+            // Apart from the ledger's pass, so a failure in one never skips or
+            // is reported as the other. A benchmark pass that ran out the
+            // assessment's clock finishes in ComfyUI later; its image is
+            // cleared here once it has. Free when there is none: nothing is
+            // asked of ComfyUI.
+            try
+            {
+                await Runtime.PurgeBenchmarksAsync(ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                Log.Warn($"[warn] clearing the assessment's renders failed this pass: {ex.Message}");
             }
         }
     }
