@@ -46,6 +46,12 @@ public sealed partial class ComfyRuntime
     /// <summary>Every prompt id this process accepted down the tunnel, so purge can tell ours from the owner's.</summary>
     private readonly HashSet<string> _known = new(StringComparer.Ordinal);
 
+    /// <summary>
+    /// When each prompt in <see cref="_known"/> was handed to ComfyUI. A purge
+    /// deletes nothing written before it: a file that old is not this job's.
+    /// </summary>
+    private readonly Dictionary<string, DateTimeOffset> _acceptedAt = new(StringComparer.Ordinal);
+
     /// <summary>How many consecutive checks found a tracked prompt in neither the queue nor the history.</summary>
     private readonly Dictionary<string, int> _misses = new(StringComparer.Ordinal);
 
@@ -53,7 +59,11 @@ public sealed partial class ComfyRuntime
     private int _submitting;
 
     private DateTimeOffset _lastTunnelFinished = DateTimeOffset.MinValue;
-    private DateTimeOffset _lastPurged = DateTimeOffset.MinValue;
+
+    /// <summary>The customer prompt that finished last, and whether aixman has collected that one.</summary>
+    private string? _lastFinishedPrompt;
+    private bool _lastFinishedCollected;
+
     private int? _queueRemaining;
     private string? _gpuHash;
 
@@ -85,14 +95,24 @@ public sealed partial class ComfyRuntime
     }
 
     /// <summary>
-    /// aixman has purged a job since the last customer render ended — which it
-    /// does only after copying the result away, so there is nothing left for
-    /// it to collect.
+    /// aixman has purged the customer render that ended last — which it does
+    /// only after copying the result away, so there is nothing left for it to
+    /// collect.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Lets a stop end as soon as delivery is done, instead of always waiting
     /// out the grace. An aixman that predates <c>/aixman/purge</c> never says
     /// so, and gets the grace.
+    /// </para>
+    /// <para>
+    /// Tied to that one prompt, not to "a purge happened". It used to be any
+    /// purge at all: the node's own six-hour fallback clearing an old job, or
+    /// aixman retrying the purge of an earlier one, landed a few seconds after
+    /// a render ended and let a STOP close the relay before aixman had read
+    /// the new result. That job was redone elsewhere and the owner was not
+    /// paid for it.
+    /// </para>
     /// </remarks>
     public bool CollectedSinceLastFinish
     {
@@ -100,11 +120,74 @@ public sealed partial class ComfyRuntime
         {
             lock (_stateGate)
             {
-                return _lastTunnelFinished != DateTimeOffset.MinValue
-                    && _lastPurged >= _lastTunnelFinished
+                return _lastFinishedPrompt is not null
+                    && _lastFinishedCollected
                     && _tunnelPrompts.Count == 0;
             }
         }
+    }
+
+    /// <summary>Called with the lock held, when a customer prompt the runtime was tracking has ended.</summary>
+    private void NoteFinishedLocked(string promptId)
+    {
+        _lastTunnelFinished = DateTimeOffset.UtcNow;
+        _lastFinishedPrompt = promptId;
+        _lastFinishedCollected = false;
+    }
+
+    /// <summary>aixman purged <paramref name="promptId"/> — which it does once the result is safely copied away.</summary>
+    private void NoteCollected(string promptId)
+    {
+        lock (_stateGate)
+        {
+            if (promptId == _lastFinishedPrompt) _lastFinishedCollected = true;
+        }
+    }
+
+    /// <summary>Called with the lock held: a prompt this process has handed to ComfyUI for the tunnel.</summary>
+    private void RememberLocked(string promptId)
+    {
+        // The ledger is the lasting record; this only covers a node without
+        // one, so it is bounded rather than kept forever.
+        if (_known.Count > 5000)
+        {
+            _known.Clear();
+            _acceptedAt.Clear();
+        }
+        _known.Add(promptId);
+        _acceptedAt.TryAdd(promptId, DateTimeOffset.UtcNow);
+    }
+
+    /// <summary>Called with the lock held: a prompt ComfyUI never took after all.</summary>
+    private void ForgetLocked(string promptId)
+    {
+        _known.Remove(promptId);
+        _acceptedAt.Remove(promptId);
+    }
+
+    /// <summary>
+    /// A prompt that came down the tunnel: accepted by this process, or on the
+    /// node's ledger from an earlier run. Nothing else of ComfyUI's is a
+    /// tunnel caller's to read, delete or stop.
+    /// </summary>
+    internal bool IsTunnelPrompt(string promptId)
+    {
+        lock (_stateGate)
+        {
+            if (_known.Contains(promptId) || _tunnelPrompts.ContainsKey(promptId) || _promptInputs.ContainsKey(promptId))
+                return true;
+        }
+        return FromLedger(l => l.HasJob(promptId));
+    }
+
+    /// <summary>When a tunnel prompt was handed to ComfyUI, from this process or the ledger. Null when neither knows.</summary>
+    private DateTimeOffset? SubmittedAtOf(string promptId)
+    {
+        lock (_stateGate)
+        {
+            if (_acceptedAt.TryGetValue(promptId, out DateTimeOffset at)) return at;
+        }
+        return FromLedger(l => l.JobSubmittedAt(promptId));
     }
 
     /// <summary>Prompts in ComfyUI's queue when last read, owner's and customers' alike. Null when ComfyUI could not be asked.</summary>
@@ -144,7 +227,7 @@ public sealed partial class ComfyRuntime
     /// <summary>Called with the lock held, when ComfyUI says a prompt has ended.</summary>
     private void FinishTunnel(string promptId)
     {
-        if (_tunnelPrompts.Remove(promptId)) _lastTunnelFinished = DateTimeOffset.UtcNow;
+        if (_tunnelPrompts.Remove(promptId)) NoteFinishedLocked(promptId);
         _misses.Remove(promptId);
     }
 
@@ -164,7 +247,7 @@ public sealed partial class ComfyRuntime
         lock (_stateGate)
         {
             bool tracked = _tunnelPrompts.Remove(promptId);
-            if (tracked) _lastTunnelFinished = DateTimeOffset.UtcNow;
+            if (tracked) NoteFinishedLocked(promptId);
             _misses.Remove(promptId);
 
             bool current = _state.PromptId == promptId && !_state.Done && !_state.Failed;
@@ -200,7 +283,7 @@ public sealed partial class ComfyRuntime
         lock (_stateGate)
         {
             _tunnelPrompts[promptId] = DateTimeOffset.UtcNow;
-            _known.Add(promptId);
+            RememberLocked(promptId);
         }
     }
 

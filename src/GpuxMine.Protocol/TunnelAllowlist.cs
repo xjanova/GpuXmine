@@ -34,6 +34,14 @@ public enum TunnelVerdict
 /// talking to a relay that predates it. It lives here so the two cannot drift.
 /// </para>
 /// <para>
+/// It decides routes, not whose work a route reaches: the relay cannot see
+/// the owner's ComfyUI. <c>/history</c>, <c>/queue</c>, <c>/view</c>,
+/// <c>/interrupt</c> and <c>/upload/image</c> are allowed here because aixman
+/// needs them for its own jobs; the agent holds each of them to the prompts
+/// that came down the tunnel (<c>ComfyRuntime.Scope.cs</c>). An agent that
+/// predates that has only this list.
+/// </para>
+/// <para>
 /// Paths are checked exactly as they travel on the tunnel (path plus query, as
 /// the relay forwards them), and any segment that could walk out of the route
 /// it names — <c>..</c>, an encoded slash, a backslash — is refused outright

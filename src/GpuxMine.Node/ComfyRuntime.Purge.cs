@@ -42,7 +42,8 @@ public sealed record PurgeResult(int Files, bool HistoryDeleted, int Skipped, st
 /// process accepted, or ones the node's ledger recorded — so nothing aixman
 /// sends can delete the owner's own work. Files are deleted only inside the
 /// folder ComfyUI itself would have written them to, by the names ComfyUI's
-/// own history gives for that prompt.
+/// own history gives for that prompt, and only when they were written after
+/// the job began.
 /// </para>
 /// </remarks>
 public sealed partial class ComfyRuntime
@@ -57,6 +58,24 @@ public sealed partial class ComfyRuntime
     private DateTimeOffset _foldersReadAt = DateTimeOffset.MinValue;
     private bool _warnedFolders;
 
+    /// <summary>
+    /// How long ComfyUI's folders are trusted once found. Short: the owner can
+    /// close one install and start another on the same port, and a purge that
+    /// went on resolving names against the first would delete that install's
+    /// files — the owner's own, under the same counter-numbered names.
+    /// </summary>
+    internal TimeSpan FoldersTrustedFor { get; set; } = TimeSpan.FromMinutes(1);
+
+    /// <summary>
+    /// How much older than its job a file may be and still be the job's. A
+    /// render writes its outputs after the prompt was handed over; a minute
+    /// covers the clock and file-system timestamp rounding.
+    /// </summary>
+    private static readonly TimeSpan OutputSkew = TimeSpan.FromMinutes(1);
+
+    /// <summary>Uploads come before the prompt that reads them — by seconds, as aixman does it.</summary>
+    private static readonly TimeSpan UploadLead = TimeSpan.FromHours(1);
+
     // ---------------------------------------------------------------- uploads
 
     private async Task<LocalReply> UploadAsync(string method, string pathAndQuery, Dictionary<string, string> headers, byte[] body, CancellationToken ct)
@@ -68,9 +87,112 @@ public sealed partial class ComfyRuntime
             return refused;
         }
 
-        LocalReply reply = await ForwardAsync(method, pathAndQuery, headers, body, ct);
+        if (UploadRefusal(headers, body) is { } why)
+        {
+            NoteRefusal($"refused an upload: {why}");
+            return LocalReply.Json(403, new { error = "upload-not-allowed", reason = why });
+        }
+
+        // On the node's own clock, like a submission: an upload ComfyUI has
+        // written must be tracked, or nothing ever deletes it.
+        LocalReply reply = await ForwardAsync(method, pathAndQuery, headers, body, _stopping.Token, refuseWhenUnreachable: true);
         RememberUpload(reply);
         return reply;
+    }
+
+    /// <summary>
+    /// Why an upload must not reach ComfyUI, or null when it may: one file,
+    /// named the way aixman names every file it uploads, into the top of the
+    /// input folder.
+    /// </summary>
+    /// <remarks>
+    /// ComfyUI's upload takes a folder (<c>type</c>: input, output or temp), a
+    /// subfolder and <c>overwrite</c> from the caller. Unchecked, anyone
+    /// holding the tunnel token could write over the owner's own renders by
+    /// name. aixman sends none of type or subfolder, and names every file
+    /// <c>aixman-…-{uuid}</c>, so a name with that prefix can only ever meet
+    /// another of aixman's own files.
+    /// </remarks>
+    internal static string? UploadRefusal(IReadOnlyDictionary<string, string> headers, byte[] body)
+    {
+        if (HeaderValue(headers, "Content-Type") is not { } contentType
+            || !System.Net.Http.Headers.MediaTypeHeaderValue.TryParse(contentType, out var media)
+            || !string.Equals(media.MediaType, "multipart/form-data", StringComparison.OrdinalIgnoreCase))
+        {
+            return "not multipart/form-data";
+        }
+
+        string? boundary = media.Parameters
+            .FirstOrDefault(p => string.Equals(p.Name, "boundary", StringComparison.OrdinalIgnoreCase))?.Value?.Trim('"');
+        if (string.IsNullOrEmpty(boundary) || boundary.Length > 200) return "no multipart boundary";
+
+        byte[] delimiter = Encoding.ASCII.GetBytes("--" + boundary);
+        byte[] nextPart = Encoding.ASCII.GetBytes("\r\n--" + boundary);
+        ReadOnlySpan<byte> data = body;
+
+        int position = data.IndexOf(delimiter);
+        if (position < 0) return "malformed multipart body";
+
+        int images = 0;
+        string? filename = null;
+        string type = "", subfolder = "";
+        for (int parts = 0; ; parts++)
+        {
+            if (parts > 32) return "too many multipart fields";
+            position += delimiter.Length;
+            if (data[position..].StartsWith("--"u8)) break;
+            if (!data[position..].StartsWith("\r\n"u8)) return "malformed multipart body";
+            position += 2;
+
+            int headerLength = data[position..].IndexOf("\r\n\r\n"u8);
+            if (headerLength < 0) return "malformed multipart body";
+            string partHeaders = Encoding.UTF8.GetString(data.Slice(position, headerLength));
+            position += headerLength + 4;
+
+            int contentLength = data[position..].IndexOf(nextPart);
+            if (contentLength < 0) return "malformed multipart body";
+            ReadOnlySpan<byte> content = data.Slice(position, contentLength);
+            position += contentLength + 2;
+
+            (string? name, string? file) = FormField(partHeaders);
+            switch (name)
+            {
+                case "image":
+                    images++;
+                    filename = file;
+                    break;
+                case "type":
+                    type = Encoding.UTF8.GetString(content).Trim();
+                    break;
+                case "subfolder":
+                    subfolder = Encoding.UTF8.GetString(content).Trim();
+                    break;
+            }
+        }
+
+        if (images != 1 || string.IsNullOrEmpty(filename)) return "one image file expected";
+        if (!filename.StartsWith("aixman-", StringComparison.Ordinal)) return "only files named aixman-* may be uploaded";
+        if (filename.Length > 200 || filename.Contains("..", StringComparison.Ordinal)
+            || filename.Any(c => c is '/' or '\\' or ':' || c < 0x20 || c == 0x7f))
+        {
+            return "file name not allowed";
+        }
+        if (type is not ("" or "input")) return "uploads go to the input folder only";
+        if (subfolder.Length > 0) return "uploads go to the top of the input folder only";
+        return null;
+    }
+
+    /// <summary>The <c>name</c> and <c>filename</c> of one multipart part.</summary>
+    private static (string? Name, string? Filename) FormField(string partHeaders)
+    {
+        foreach (string line in partHeaders.Split("\r\n"))
+        {
+            int colon = line.IndexOf(':');
+            if (colon < 0 || !line[..colon].Trim().Equals("Content-Disposition", StringComparison.OrdinalIgnoreCase)) continue;
+            if (!System.Net.Http.Headers.ContentDispositionHeaderValue.TryParse(line[(colon + 1)..].Trim(), out var disposition)) return (null, null);
+            return (disposition.Name?.Trim('"'), disposition.FileName?.Trim('"'));
+        }
+        return (null, null);
     }
 
     private void RememberUpload(LocalReply reply)
@@ -132,20 +254,20 @@ public sealed partial class ComfyRuntime
     /// <returns>How many files were deleted.</returns>
     public async Task<int> SweepUnclaimedUploadsAsync(TimeSpan olderThan, CancellationToken ct)
     {
-        List<ComfyFile> stale;
+        List<(ComfyFile File, DateTimeOffset At)> stale;
         lock (_stateGate)
         {
             DateTimeOffset cutoff = DateTimeOffset.UtcNow - olderThan;
-            stale = _uploads.Where(u => u.At < cutoff).Select(u => u.File).ToList();
+            stale = _uploads.Where(u => u.At < cutoff).ToList();
             _uploads.RemoveAll(u => u.At < cutoff);
         }
         if (stale.Count == 0) return 0;
 
         ComfyFolders folders = await FoldersAsync(ct);
         int deleted = 0;
-        foreach (ComfyFile file in stale)
+        foreach (var (file, at) in stale)
         {
-            if (TryDelete(folders, file, out _) == true) deleted++;
+            if (TryDelete(folders, file, at - OutputSkew, out _) == true) deleted++;
         }
         if (deleted > 0) Note($"deleted {deleted} unclaimed upload(s) older than {olderThan.TotalHours:0} h");
         return deleted;
@@ -166,6 +288,10 @@ public sealed partial class ComfyRuntime
         if (result.Running) return LocalReply.Json(503, new { error = "prompt-running", purged = 0 });
         if (result.Unreachable) return LocalReply.Json(502, new { error = "local runtime unreachable", purged = 0 });
 
+        // aixman purges once the result is safely copied away — this, and
+        // not the node's own fallback purge, is what says a job was collected.
+        if (!result.Unknown) NoteCollected(promptId);
+
         return LocalReply.Json(200, new
         {
             purged = result.Files,
@@ -179,15 +305,15 @@ public sealed partial class ComfyRuntime
     /// Deletes a finished customer prompt's output files, the inputs uploaded
     /// for it, and its entry in ComfyUI's history. Idempotent.
     /// </summary>
+    /// <remarks>
+    /// Collection is not recorded here: the node's own fallback purge comes
+    /// through this too, and must not tell a stop that aixman has the result.
+    /// </remarks>
     public async Task<PurgeResult> PurgeAsync(string promptId, CancellationToken ct)
     {
-        bool known;
-        lock (_stateGate) known = _known.Contains(promptId) || _promptInputs.ContainsKey(promptId);
-        if (!known) known = FromLedger(l => l.HasJob(promptId));
-
         // Not ours, and so not ours to delete — whatever the id, nothing aixman
         // says reaches the owner's own work.
-        if (!known) return new PurgeResult(0, false, 0, null) { Unknown = true };
+        if (!IsTunnelPrompt(promptId)) return new PurgeResult(0, false, 0, null) { Unknown = true };
 
         HistoryEntry entry = await HistoryAsync(promptId, ct);
         if (entry.State == HistoryState.Unknown) return new PurgeResult(0, false, 0, null) { Unreachable = true };
@@ -195,6 +321,15 @@ public sealed partial class ComfyRuntime
 
         if (entry.State == HistoryState.Done)
         {
+            // ComfyUI writes a prompt's history and takes it off the queue in
+            // one step, so both at once means two prompts under one id — an
+            // older entry, and a submission reusing its id that has not run
+            // yet. Those files are the older one's, and not this job's to
+            // delete. The node now picks every id it submits; this holds for
+            // any row from before it did.
+            if (await ReadQueueAsync(ct) is { } queue && queue.PromptIds.Contains(promptId))
+                return new PurgeResult(0, false, 0, null) { Running = true };
+
             // Finished, whatever the progress socket did or did not report.
             // Settled here, before the history goes: it is the only record the
             // reconciler could settle the job from, and a job purged before
@@ -215,22 +350,29 @@ public sealed partial class ComfyRuntime
             if (running) return new PurgeResult(0, false, 0, null) { Running = true };
         }
 
-        var files = new List<ComfyFile>(entry.Files ?? []);
+        // Each file with the oldest it may be and still be this job's. Unknown
+        // start (null) deletes no output: a counter-numbered name like
+        // ComfyUI_00012_.png means nothing without it.
+        DateTimeOffset? submitted = SubmittedAtOf(promptId);
+        var files = new Dictionary<ComfyFile, DateTimeOffset?>();
+        foreach (ComfyFile output in entry.Files ?? []) files.TryAdd(output, submitted - OutputSkew);
+
+        var inputs = new List<ComfyFile>();
         lock (_stateGate)
         {
-            if (_promptInputs.TryGetValue(promptId, out var inputs)) files.AddRange(inputs);
+            if (_promptInputs.TryGetValue(promptId, out var claimed)) inputs.AddRange(claimed);
         }
-        files.AddRange(FromLedger(l => l.InputsOf(promptId)) ?? []);
-        files = files.Distinct().ToList();
+        inputs.AddRange(FromLedger(l => l.InputsOf(promptId)) ?? []);
+        foreach (ComfyFile input in inputs) files.TryAdd(input, submitted - UploadLead);
 
         int deleted = 0, skipped = 0;
         string? note = null;
         if (files.Count > 0)
         {
             ComfyFolders folders = await FoldersAsync(ct);
-            foreach (ComfyFile file in files)
+            foreach (var (file, notBefore) in files)
             {
-                switch (TryDelete(folders, file, out string? why))
+                switch (TryDelete(folders, file, notBefore, out string? why))
                 {
                     case true: deleted++; break;
                     case null: skipped++; note ??= why; break;
@@ -247,12 +389,10 @@ public sealed partial class ComfyRuntime
         lock (_stateGate)
         {
             _promptInputs.Remove(promptId);
-            _known.Remove(promptId);
+            ForgetLocked(promptId);
             _graphs.Remove(promptId);
             _lastOutput.Remove(promptId);
-            // aixman purges once the result is safely copied away, so this is
-            // also the moment the job has been collected.
-            _lastPurged = DateTimeOffset.UtcNow;
+            ForgetDeliverablesLocked(promptId);
         }
 
         if (skipped > 0 && !_warnedFolders)
@@ -280,7 +420,13 @@ public sealed partial class ComfyRuntime
     }
 
     /// <summary>True when deleted, false when there was nothing to delete, null when it could not be.</summary>
-    private static bool? TryDelete(ComfyFolders folders, ComfyFile file, out string? why)
+    /// <param name="notBefore">
+    /// The oldest the file may be and still belong to the job; null when the
+    /// job's start is not known. An older file under the same name is someone
+    /// else's — the owner's own render from a different install, or the
+    /// output a cached prompt merely points back at — and is left alone.
+    /// </param>
+    private static bool? TryDelete(ComfyFolders folders, ComfyFile file, DateTimeOffset? notBefore, out string? why)
     {
         string? root = file.Type switch
         {
@@ -307,6 +453,18 @@ public sealed partial class ComfyRuntime
         {
             why = null;
             if (!File.Exists(path)) return false;
+
+            if (notBefore is not { } oldest)
+            {
+                why = "ไม่รู้ว่างานนี้เริ่มเมื่อไร — ไม่ลบไฟล์ที่อาจเป็นของเจ้าของเครื่อง";
+                return null;
+            }
+            if (File.GetLastWriteTimeUtc(path) < oldest.UtcDateTime)
+            {
+                why = $"ไฟล์ {file.Filename} เก่ากว่างานนี้ — ไม่ใช่ไฟล์ของงาน จึงไม่ลบ";
+                return null;
+            }
+
             File.Delete(path);
             return true;
         }
@@ -429,8 +587,10 @@ public sealed partial class ComfyRuntime
     /// </remarks>
     public async Task<ComfyFolders> FoldersAsync(CancellationToken ct)
     {
-        if (_folders is { Output: not null } found) return found;
-        if (_folders is not null && DateTimeOffset.UtcNow - _foldersReadAt < TimeSpan.FromMinutes(10)) return _folders;
+        // Read again after a minute, found or not. It used to be kept for the
+        // life of the process once found, and outlived the ComfyUI it was
+        // read from — see FoldersTrustedFor.
+        if (_folders is not null && DateTimeOffset.UtcNow - _foldersReadAt < FoldersTrustedFor) return _folders;
 
         string? baseDir = _options.ComfyBaseDirectory;
         string? output = _options.ComfyOutputDirectory;

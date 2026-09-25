@@ -35,7 +35,10 @@ public class AgentRoundTripTests
         return app;
     }
 
-    /// <summary>ComfyUI, as far as this test needs it: one big output file and a queue.</summary>
+    /// <summary>
+    /// ComfyUI, as far as this test needs it: a queue, a prompt that finishes
+    /// at once with one big output file, that prompt's history, and the file.
+    /// </summary>
     private static async Task<(WebApplication App, byte[] Image)> StartFakeComfyAsync()
     {
         byte[] image = FakeAgent.Payload(3 * 1024 * 1024 + 123, seed: 11);
@@ -45,7 +48,28 @@ public class AgentRoundTripTests
         var app = builder.Build();
         app.MapGet("/view", () => Results.Bytes(image, "image/png"));
         app.MapGet("/queue", () => Results.Json(new { queue_running = Array.Empty<object>(), queue_pending = Array.Empty<object>() }));
+        app.MapPost("/prompt", async (HttpRequest request) =>
+        {
+            // Current ComfyUI keeps the id the client chose.
+            var body = await System.Text.Json.Nodes.JsonNode.ParseAsync(request.Body);
+            return Results.Json(new { prompt_id = body!["prompt_id"]!.GetValue<string>(), number = 1, node_errors = new { } });
+        });
+        app.MapGet("/history/{id}", (string id) =>
+        {
+            var entry = System.Text.Json.Nodes.JsonNode.Parse("""
+                {"status":{"status_str":"success","completed":true},
+                 "outputs":{"9":{"images":[{"filename":"ComfyUI_00001_.png","subfolder":"","type":"output"}]}}}
+                """);
+            return Results.Content(new System.Text.Json.Nodes.JsonObject { [id] = entry }.ToJsonString(), "application/json");
+        });
         return (await StartOnLoopbackAsync(app), image);
+    }
+
+    private static HttpRequestMessage Tunnel(HttpMethod method, Enrolled worker, string path, HttpContent? content = null)
+    {
+        var request = new HttpRequestMessage(method, $"/w/{worker.WorkerId}{path}") { Content = content };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", worker.TunnelToken);
+        return request;
     }
 
     private static async Task<(WebApplication App, string Directory)> StartRelayAsync(bool streamReplies)
@@ -100,13 +124,25 @@ public class AgentRoundTripTests
 
             await WaitUntilAsync(() => relay.Services.GetRequiredService<AgentRegistry>().Get(worker.WorkerId) is not null, cts.Token);
 
-            using var view = new HttpRequestMessage(HttpMethod.Get, $"/w/{worker.WorkerId}/view?filename=ComfyUI_00001_.png&type=output");
-            view.Headers.Authorization = new AuthenticationHeaderValue("Bearer", worker.TunnelToken);
-            using HttpResponseMessage response = await http.SendAsync(view, cts.Token);
+            // aixman's own order: submit, read that job's history, fetch the file it names.
+            using HttpResponseMessage submitted = await http.SendAsync(Tunnel(HttpMethod.Post, worker, "/prompt",
+                JsonContent.Create(new { prompt = new { }, client_id = "aixman" })), cts.Token);
+            Assert.Equal(HttpStatusCode.OK, submitted.StatusCode);
+            string promptId = (await submitted.Content.ReadFromJsonAsync<System.Text.Json.Nodes.JsonObject>(cts.Token))!["prompt_id"]!.GetValue<string>();
+            using (HttpResponseMessage history = await http.SendAsync(Tunnel(HttpMethod.Get, worker, $"/history/{promptId}"), cts.Token))
+                Assert.Equal(HttpStatusCode.OK, history.StatusCode);
+
+            using HttpResponseMessage response = await http.SendAsync(
+                Tunnel(HttpMethod.Get, worker, "/view?filename=ComfyUI_00001_.png&subfolder=&type=output"), cts.Token);
 
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
             Assert.Equal("image/png", response.Content.Headers.ContentType?.MediaType);
             Assert.Equal(image, await response.Content.ReadAsByteArrayAsync(cts.Token));
+
+            // Any other file of the owner's is not there as far as the tunnel is concerned.
+            using (HttpResponseMessage owners = await http.SendAsync(
+                       Tunnel(HttpMethod.Get, worker, "/view?filename=ComfyUI_00002_.png&type=output"), cts.Token))
+                Assert.Equal(HttpStatusCode.NotFound, owners.StatusCode);
 
             // The shape really was the one negotiated.
             Assert.Equal(relayStreams, log.Saw("streamed replies"));

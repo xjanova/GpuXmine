@@ -539,6 +539,35 @@ public sealed class NodeStore : IDisposable
         return command.ExecuteScalar() is not null;
     }
 
+    /// <summary>When a job was recorded as submitted, or null when the ledger does not hold it.</summary>
+    public DateTimeOffset? JobSubmittedAt(string promptId)
+    {
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT submitted_at FROM jobs WHERE prompt_id = $id";
+        command.Parameters.AddWithValue("$id", promptId);
+        return command.ExecuteScalar() is long at ? FromUnix(at) : null;
+    }
+
+    /// <summary>Jobs submitted since <paramref name="since"/> whose files have not been purged, newest first.</summary>
+    public IReadOnlyList<string> UnpurgedJobs(DateTimeOffset since, int limit = 10)
+    {
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT prompt_id FROM jobs
+             WHERE purged_at IS NULL AND submitted_at >= $since
+             ORDER BY submitted_at DESC LIMIT $n
+            """;
+        command.Parameters.AddWithValue("$since", since.ToUnixTimeMilliseconds());
+        command.Parameters.AddWithValue("$n", limit);
+
+        var ids = new List<string>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read()) ids.Add(reader.GetString(0));
+        return ids;
+    }
+
     /// <summary>The job is on record and has not been finished — queued or running.</summary>
     public bool JobIsOpen(string promptId)
     {

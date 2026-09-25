@@ -46,6 +46,18 @@ public sealed class FakeComfy : IAsyncDisposable
     /// <summary>Put an accepted prompt in the queue, as ComfyUI does, so the node sees it running.</summary>
     public bool QueueAcceptedPrompts { get; set; }
 
+    /// <summary>
+    /// Take the <c>prompt_id</c> a submission carries, as current ComfyUI does.
+    /// Off, it mints its own — a ComfyUI from before client-chosen ids.
+    /// </summary>
+    public bool HonorPromptId { get; set; }
+
+    /// <summary>Bodies of POST /interrupt that reached ComfyUI.</summary>
+    public ConcurrentQueue<string> Interrupts { get; } = new();
+
+    /// <summary>Close the connection instead of answering POST /prompt — after taking it, as a ComfyUI that dies mid-answer does.</summary>
+    public bool DropPromptAnswers { get; set; }
+
     public string Url { get; }
 
     private FakeComfy(WebApplication app)
@@ -80,14 +92,30 @@ public sealed class FakeComfy : IAsyncDisposable
             return Results.Json(new { queue_running = running, queue_pending = Array.Empty<object>() });
         });
 
-        app.MapPost("/prompt", async (HttpRequest request) =>
+        app.MapPost("/prompt", async (HttpContext context) =>
+        {
+            using var reader = new StreamReader(context.Request.Body);
+            string body = await reader.ReadToEndAsync();
+            fake!.Prompts.Enqueue(body);
+            if (fake.PromptDelay > TimeSpan.Zero) await Task.Delay(fake.PromptDelay);
+
+            string? asked = fake.HonorPromptId ? JsonNode.Parse(body)?["prompt_id"]?.GetValue<string>() : null;
+            string id = asked ?? $"prompt-{Interlocked.Increment(ref fake._nextPrompt)}";
+            if (fake.QueueAcceptedPrompts) fake.Queue[id] = true;
+
+            if (fake.DropPromptAnswers)
+            {
+                context.Abort();
+                return Results.Empty;
+            }
+            return Results.Json(new { prompt_id = id, number = 1, node_errors = new { } });
+        });
+
+        app.MapPost("/interrupt", async (HttpRequest request) =>
         {
             using var reader = new StreamReader(request.Body);
-            fake!.Prompts.Enqueue(await reader.ReadToEndAsync());
-            if (fake.PromptDelay > TimeSpan.Zero) await Task.Delay(fake.PromptDelay);
-            string id = $"prompt-{Interlocked.Increment(ref fake._nextPrompt)}";
-            if (fake.QueueAcceptedPrompts) fake.Queue[id] = true;
-            return Results.Json(new { prompt_id = id, number = 1, node_errors = new { } });
+            fake!.Interrupts.Enqueue(await reader.ReadToEndAsync());
+            return Results.Ok();
         });
 
         app.MapGet("/history/{id}", (string id) =>
@@ -110,7 +138,12 @@ public sealed class FakeComfy : IAsyncDisposable
             return Results.Ok();
         });
 
-        app.MapPost("/upload/image", () => Results.Json(new { name = "customer-face.png", subfolder = "", type = "input" }));
+        app.MapPost("/upload/image", async (HttpRequest request) =>
+        {
+            var form = await request.ReadFormAsync();
+            string name = form.Files["image"]?.FileName ?? "unnamed.png";
+            return Results.Json(new { name, subfolder = "", type = "input" });
+        });
 
         app.MapGet("/internal/folder_paths", () =>
             fake!.CustomNodesPath is { } path
@@ -214,6 +247,26 @@ public static class Http
             graph["10"] = new JsonObject { ["class_type"] = "LoadImage", ["inputs"] = new JsonObject { ["image"] = loadImage } };
 
         return Json(new JsonObject { ["prompt"] = graph, ["client_id"] = "aixman" });
+    }
+
+    /// <summary>A multipart upload as aixman builds it, with the fields a test wants to vary.</summary>
+    public static (Dictionary<string, string> Headers, byte[] Body) Upload(
+        string filename, string? type = null, string? subfolder = null, bool overwrite = true)
+    {
+        const string boundary = "----aixmantest";
+        var text = new System.Text.StringBuilder();
+        text.Append($"--{boundary}\r\nContent-Disposition: form-data; name=\"image\"; filename=\"{filename}\"\r\nContent-Type: image/png\r\n\r\n");
+        text.Append("PNGDATA\r\n");
+        if (type is not null) text.Append($"--{boundary}\r\nContent-Disposition: form-data; name=\"type\"\r\n\r\n{type}\r\n");
+        if (subfolder is not null) text.Append($"--{boundary}\r\nContent-Disposition: form-data; name=\"subfolder\"\r\n\r\n{subfolder}\r\n");
+        text.Append($"--{boundary}\r\nContent-Disposition: form-data; name=\"overwrite\"\r\n\r\n{(overwrite ? "true" : "false")}\r\n");
+        text.Append($"--{boundary}--\r\n");
+
+        var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Content-Type"] = $"multipart/form-data; boundary={boundary}",
+        };
+        return (headers, System.Text.Encoding.UTF8.GetBytes(text.ToString()));
     }
 
     public static string Started(string promptId) => Event("execution_start", promptId);
