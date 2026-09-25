@@ -85,6 +85,10 @@
                             <TextBlock Visibility="{Binding ShowPauseReason, Converter={StaticResource Vis}}" Margin="2,6,0,0" FontSize="11" Foreground="{StaticResource RedDark}">
                                 <Run Text="หยุดรับงานชั่วคราว — "/><Run Text="{Binding PauseReason, Mode=OneWay}"/>
                             </TextBlock>
+                            <!-- Why the relay refused the machine, or what a stop is still
+                                 waiting for: the two things only the owner can act on. -->
+                            <TextBlock Visibility="{Binding HasConnectionNote, Converter={StaticResource Vis}}" Text="{Binding ConnectionNote}"
+                                       Margin="2,6,0,0" FontSize="11" TextWrapping="Wrap" Foreground="{StaticResource RedDark}"/>
                             <TextBlock Text="{Binding ConfigureHint}" Margin="2,6,0,0" FontSize="11" Foreground="{StaticResource RedDark}"/>
                             <!-- stat tiles -->
                             <Grid Margin="0,10,0,0">

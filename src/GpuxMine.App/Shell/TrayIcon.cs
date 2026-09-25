@@ -21,12 +21,20 @@ public sealed class TrayIcon : IDisposable
     private readonly NotifyIcon _icon;
     private readonly NodeHost _host;
     private readonly Window _window;
+    private readonly Func<Task> _toggle;
     private readonly ToolStripMenuItem _toggleItem;
+    private bool _quitting;
 
-    public TrayIcon(NodeHost host, Window window)
+    /// <param name="toggle">
+    /// The Dashboard dial's own START/STOP, confirmation and all. The tray used
+    /// to stop sharing with no question asked and no drain, so the same click
+    /// that was careful in the window threw away a finished render here.
+    /// </param>
+    public TrayIcon(NodeHost host, Window window, Func<Task> toggle)
     {
         _host = host;
         _window = window;
+        _toggle = toggle;
 
         var menu = new ContextMenuStrip();
         _toggleItem = new ToolStripMenuItem("เริ่มแชร์", null, (_, _) => ToggleSharing());
@@ -77,9 +85,11 @@ public sealed class TrayIcon : IDisposable
     private void Refresh()
     {
         var s = _host.State;
-        _toggleItem.Text = s.Running ? "หยุดแชร์" : "เริ่มแชร์";
+        _toggleItem.Text = s.Draining ? "กำลังหยุด… (กดเพื่อเลือก)" : s.Running ? "หยุดแชร์" : "เริ่มแชร์";
 
         string status = !s.Running ? "หยุดอยู่"
+            : s.Connection == ConnectionState.Rejected ? "relay ปฏิเสธ — ลงทะเบียนใหม่"
+            : s.Draining ? "กำลังหยุด — ส่งงานให้ครบ"
             : s.Accepting ? "กำลังแชร์"
             : s.PauseReason ?? "หยุดรับงานชั่วคราว";
 
@@ -98,25 +108,63 @@ public sealed class TrayIcon : IDisposable
         _window.Activate();
     }
 
-    private void ToggleSharing()
-    {
-        if (_host.State.Running) _ = _host.StopAsync();
-        else _ = _host.StartAsync();
-    }
+    private void ToggleSharing() => _ = _toggle();
 
-    private void Quit()
+    /// <summary>
+    /// Quitting while a customer's job is on the machine offers to deliver it
+    /// first — the same drain STOP uses — instead of only warning that it will
+    /// be lost.
+    /// </summary>
+    /// <remarks>
+    /// Quitting does not touch the remembered switch: the owner closed the
+    /// program, they did not decide to stop sharing, and the next launch picks
+    /// up where this one left off.
+    /// </remarks>
+    private async void Quit()
     {
-        var answer = System.Windows.MessageBox.Show(
-            _host.Runtime.IsBusy
-                ? "กำลังเรนเดอร์งานอยู่ ถ้าออกตอนนี้งานปัจจุบันจะไม่เสร็จและไม่ได้รับค่าตอบแทน\n\nออกจากโปรแกรมเลยไหม?"
-                : "ออกจากโปรแกรมและหยุดแชร์การ์ดจอ?",
-            "GPUxMINE", MessageBoxButton.YesNo, MessageBoxImage.Question);
+        if (_quitting) return;
 
-        if (answer == MessageBoxResult.Yes)
+        bool working = _host.State.Running && (_host.Runtime.IsWorking || _host.State.Draining);
+        if (working)
         {
-            _icon.Visible = false;   // before Shutdown, or the icon lingers until hover
-            Application.Current.Shutdown();
+            var answer = System.Windows.MessageBox.Show(
+                "เครื่องกำลังทำงานของลูกค้าอยู่\n\n"
+                + "ใช่ — ทำงานนี้ให้เสร็จและส่งให้ลูกค้าก่อน แล้วค่อยปิดโปรแกรมเอง (แนะนำ ได้รับค่าตอบแทนตามปกติ)\n"
+                + "ไม่ — ปิดทันที งานนี้จะไม่เสร็จและไม่ได้รับค่าตอบแทน\n"
+                + "ยกเลิก — ไม่ปิด",
+                "ออกจากโปรแกรม", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+
+            if (answer == MessageBoxResult.Cancel) return;
+            _quitting = true;
+            if (answer == MessageBoxResult.Yes)
+            {
+                _window.Hide();
+                _icon.Text = "GPUxMINE — กำลังส่งงานก่อนปิด";
+                // Not the owner's STOP: the switch stays as it was, so the
+                // next launch shares again if it was sharing.
+                await _host.DrainAsync("กำลังปิดโปรแกรม — ทำงานที่รับไว้ให้เสร็จและส่งให้ครบก่อน");
+
+                // The owner pressed START while waiting: they changed their
+                // mind about quitting too.
+                if (_host.State.Running)
+                {
+                    _quitting = false;
+                    Refresh();
+                    return;
+                }
+            }
         }
+        else
+        {
+            var answer = System.Windows.MessageBox.Show(
+                "ออกจากโปรแกรมและหยุดแชร์การ์ดจอ?\n\nเปิดโปรแกรมครั้งหน้าจะกลับมาแชร์ต่อตามที่ตั้งไว้",
+                "GPUxMINE", MessageBoxButton.YesNo, MessageBoxImage.Question);
+            if (answer != MessageBoxResult.Yes) return;
+            _quitting = true;
+        }
+
+        _icon.Visible = false;   // before Shutdown, or the icon lingers until hover
+        Application.Current.Shutdown();
     }
 
     public void Dispose()

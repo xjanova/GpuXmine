@@ -56,6 +56,28 @@ public sealed class NodeSettings
 
     // --- app ---
 
+    /// <summary>
+    /// The owner's START/STOP switch, remembered: true after START (or a
+    /// pairing), false after STOP. Null on a node that has never recorded it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Sharing used to live only in memory, and only a launch from the Windows
+    /// Run key turned it back on. Every automatic update, the restart after
+    /// pairing and every launch from the Start menu came back not sharing —
+    /// one release silently switched the whole fleet off.
+    /// </para>
+    /// <para>
+    /// Null is read as "yes" for a paired node. Only a build from before this
+    /// setting existed leaves it null, and that build shared at every autostart
+    /// and was never told the owner wanted otherwise; treating its silence as
+    /// STOP would switch off every machine on the day this update lands. The
+    /// first START or STOP writes a real value, and quitting from the tray
+    /// writes nothing — closing the program is not a decision to stop sharing.
+    /// </para>
+    /// </remarks>
+    public bool? SharingEnabled { get; set; }
+
     public bool StartWithWindows { get; set; } = false;
     public bool Notifications { get; set; } = true;
     public bool LeaderboardAnonymous { get; set; } = false;

@@ -73,11 +73,21 @@
                             <StackPanel><TextBlock Text="Upscale &amp; restore — Real-ESRGAN 4x" Style="{StaticResource BodyBold}"/><TextBlock Text="needs 4 GB · งานสั้น เหมาะกับช่วงแชร์ฟรี" Style="{StaticResource Mono}" FontSize="10.5"/></StackPanel>
                         </DockPanel>
                     </Border>
+                    <!-- Audio is a kind the assessment measures and the pool
+                         dispatches; without a row here an owner who turned
+                         auto-matching off could never offer it. -->
+                    <Border Style="{StaticResource JobRow}">
+                        <DockPanel>
+                            <CheckBox DockPanel.Dock="Left" Style="{StaticResource GoldCheck}" IsChecked="{Binding AcceptAudio}" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                            <TextBlock DockPanel.Dock="Right" Text="—" Style="{StaticResource Mono}" Foreground="{StaticResource GoldAccentText}" VerticalAlignment="Center"/>
+                            <StackPanel><TextBlock Text="Music &amp; audio — ACE-Step" Style="{StaticResource BodyBold}"/><TextBlock Text="needs 5 GB · ต้องมีไฟล์โมเดลใน diffusion_models" Style="{StaticResource Mono}" FontSize="10.5"/></StackPanel>
+                        </DockPanel>
+                    </Border>
                     <Border Style="{StaticResource JobRow}">
                         <DockPanel>
                             <CheckBox DockPanel.Dock="Left" Style="{StaticResource GoldCheck}" IsChecked="{Binding AcceptText}" VerticalAlignment="Center" Margin="0,0,12,0"/>
                             <TextBlock DockPanel.Dock="Right" Text="—" Style="{StaticResource Mono}" Foreground="{StaticResource GoldAccentText}" VerticalAlignment="Center"/>
-                            <StackPanel><TextBlock Text="Text inference — Llama 8B / Qwen 7B" Style="{StaticResource BodyBold}"/><TextBlock Text="needs 9 GB · ต้องมี llama.cpp runtime (M3)" Style="{StaticResource Mono}" FontSize="10.5"/></StackPanel>
+                            <StackPanel><TextBlock Text="Text inference — Llama 8B / Qwen 7B" Style="{StaticResource BodyBold}"/><TextBlock Text="needs 9 GB · ยังไม่เปิดรับ — ต้องมี llama.cpp runtime (M3)" Style="{StaticResource Mono}" FontSize="10.5"/></StackPanel>
                         </DockPanel>
                     </Border>
                     <Border>

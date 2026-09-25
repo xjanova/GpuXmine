@@ -18,6 +18,9 @@ public partial class App : Application
     private TrayIcon? _tray;
     private NodeInstanceLock? _instanceLock;
 
+    /// <summary>What this copy was started with, carried through to the build an update starts.</summary>
+    private string[] _launchArgs = [];
+
     /// <summary>Raises the window of the copy that is already running.</summary>
     /// <remarks>
     /// Best effort by design. Failing to front someone else's window is not a
@@ -105,6 +108,7 @@ public partial class App : Application
 
         base.OnStartup(e);
 
+        _launchArgs = e.Args;
         var options = NodeConfiguration.Build(e.Args);
 
         // One node, one process.
@@ -123,7 +127,12 @@ public partial class App : Application
         // separate ledgers and separate identities; it is sharing one directory
         // that is never intentional. Local\ scope, because the ledger belongs
         // to the signed-in user.
-        _instanceLock = NodeInstanceLock.TryAcquire(options.DataDirectory);
+        //
+        // A copy an update started waits for the old one to let go. It used to
+        // find the lock still taken, front the window of a process that was
+        // about to exit, and exit itself — leaving no program running at all.
+        _instanceLock = NodeInstanceLock.TryAcquire(options.DataDirectory,
+            LaunchFlags.Has(e.Args, LaunchFlags.AfterRestart) ? LaunchFlags.RestartWait : TimeSpan.Zero);
         if (_instanceLock is null)
         {
             // Bring the window that is already running forward rather than
@@ -135,7 +144,7 @@ public partial class App : Application
             return;
         }
 
-        bool minimised = e.Args.Any(a => a.Equals("--minimized", StringComparison.OrdinalIgnoreCase));
+        bool minimised = LaunchFlags.Has(e.Args, LaunchFlags.Minimized);
 
         // Nothing is shown when the node is starting to the tray at login: a
         // splash that appears over somebody's desktop every morning is not a
@@ -217,16 +226,23 @@ public partial class App : Application
         // The tray is the node's real home; the window is a visit to it.
         // ShutdownMode is OnExplicitShutdown so closing the window — or
         // starting minimised, where no window is ever shown — does not end a
-        // process that is in the middle of earning.
-        _tray = new TrayIcon(_host, window);
+        // process that is in the middle of earning. Its START/STOP goes
+        // through the same confirm-and-drain as the dial on the Dashboard.
+        var vm = _vm;
+        _tray = new TrayIcon(_host, window, () => vm.ToggleSharingAsync());
 
         // The splash goes before the window appears, not after: two windows on
         // screen at once is worse than no splash at all.
         splash?.Close();
         if (!minimised) window.Show();
 
-        // Autostart implies the owner wants it earning, not just running.
-        if (minimised && options.Validate(out _)) _ = _host.StartAsync();
+        // Sharing comes back on whenever the owner left it on — however this
+        // launch happened. It used to come back only from the Windows Run key,
+        // so every update, every pairing and every launch from the Start menu
+        // left the machine idle while its owner believed it was earning.
+        // Judged on the host's options, which carry the identity the ledger
+        // rescued, not on the raw file.
+        _host.ResumeSharingIfEnabled();
 
         DispatcherUnhandledException += (_, args) =>
         {
@@ -240,8 +256,19 @@ public partial class App : Application
         if (_host is null) return;
         var host = _host;
         _host = null;
+
+        // Back as it was: in the tray if that is where it was, with its window
+        // if the owner was looking at it. Sharing resumes either way, from the
+        // switch the owner left on — see NodeHost.ResumeSharingIfEnabled.
+        bool windowOpen = MainWindow is { IsVisible: true };
+        string[] restartArgs = windowOpen
+            ? LaunchFlags.ForRestart(_launchArgs, LaunchFlags.AfterRestart)
+            : LaunchFlags.ForRestart(_launchArgs, LaunchFlags.Minimized, LaunchFlags.AfterRestart);
+
+        _tray?.Dispose();
+        _tray = null;
         await host.DisposeAsync();
-        host.ApplyPendingUpdate();   // does not return on success
+        host.ApplyPendingUpdate(restartArgs);   // does not return on success
         Shutdown();
     }
 

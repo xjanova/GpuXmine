@@ -11,7 +11,7 @@
         <StackPanel Grid.Column="0">
             <Border Style="{StaticResource ChromePanelStyle}">
                 <StackPanel>
-                    <TextBlock Text="POWER ALLOCATION" Style="{StaticResource SectionLabel}"/>
+                    <TextBlock Text="POWER PROFILE · ยังไม่จำกัดจริง" Style="{StaticResource SectionLabel}"/>
                     <StackPanel Orientation="Horizontal">
                         <TextBlock Style="{StaticResource BigNumber}"><Run Text="{Binding PowerPercent, Mode=OneWay}"/><Run Text="%" FontSize="22"/></TextBlock>
                         <StackPanel VerticalAlignment="Center" Margin="16,0,0,0">
@@ -44,8 +44,11 @@
                         </Button>
                     </Grid>
 
-                    <TextBlock Style="{StaticResource Muted}" Margin="0,10,0,0" FontSize="10.5"
-                               Text="เพดาน % ถูกส่งให้ pool ใช้จัดงานให้พอดี การจำกัดวัตต์ที่ระดับไดรเวอร์ต้องใช้สิทธิ์แอดมิน — มาในรุ่นถัดไป"/>
+                    <!-- Said plainly. This used to claim the percentage went to the
+                         pool to size the work; nothing sent it, and nothing limits
+                         the card. An owner who picked Eco still drew full power. -->
+                    <TextBlock Style="{StaticResource Muted}" Margin="0,10,0,0" FontSize="10.5" TextWrapping="Wrap"
+                               Text="ตัวเลขนี้ยังไม่ได้จำกัดกำลังการ์ดจริง และไม่ได้ส่งให้ pool — ตอนนี้ใช้ประมาณค่าไฟเมื่ออ่านวัตต์จากการ์ดไม่ได้เท่านั้น ถ้าต้องการจำกัดจริง ให้ตั้ง power limit ในโปรแกรมของการ์ดจอ (เช่น MSI Afterburner) แล้วกดประเมินเครื่องใหม่ในหน้า Benchmark"/>
                 </StackPanel>
             </Border>
 
@@ -110,14 +113,11 @@
                         <TextBlock Text="{Binding VramText}" Style="{StaticResource Mono}" HorizontalAlignment="Right"/>
                     </Grid>
                     <ProgressBar Style="{StaticResource Bar}" Foreground="{StaticResource GreenFill}" Minimum="0" Maximum="1" Value="{Binding VramFraction, Mode=OneWay}"/>
-                    <Grid Margin="0,12,0,8">
-                        <TextBlock Text="Upload cap" Style="{StaticResource Body}"/>
-                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                            <TextBox Style="{StaticResource ChromeInput}" Width="62" Padding="6,3" Text="{Binding UploadCap, UpdateSourceTrigger=LostFocus}" TextAlignment="Right"/>
-                            <TextBlock Text=" Mbps" Style="{StaticResource Mono}" VerticalAlignment="Center"/>
-                        </StackPanel>
-                    </Grid>
-                    <ProgressBar Style="{StaticResource Bar}" Foreground="{StaticResource BlueFill}" Minimum="0" Maximum="100" Value="50"/>
+                    <!-- The upload cap was here, over a bar fixed at 50%. Nothing
+                         throttled the tunnel by it, so it is gone until something
+                         does; the setting itself is kept for when it is enforced. -->
+                    <TextBlock Margin="0,12,0,0" Style="{StaticResource Muted}" FontSize="10.5" TextWrapping="Wrap"
+                               Text="เพดานอุณหภูมิมีผลจริง: ถึงเพดานเมื่อไรเครื่องหยุดรับงานใหม่ทันที (งานที่ค้างทำต่อจนเสร็จ)"/>
                 </StackPanel>
             </Border>
         </StackPanel>

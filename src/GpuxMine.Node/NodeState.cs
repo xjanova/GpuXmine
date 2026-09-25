@@ -3,7 +3,13 @@ using GpuxMine.Core.Updates;
 
 namespace GpuxMine.Node;
 
-public enum ConnectionState { Stopped, Connecting, Connected, Reconnecting }
+/// <remarks>
+/// <see cref="Rejected"/> is last so the values before it keep their numbers.
+/// It means the relay answered and said no — 401 (it does not know this worker
+/// or its token) or 403 (an operator switched it off) — which reconnecting
+/// will not fix, unlike <see cref="Reconnecting"/>.
+/// </remarks>
+public enum ConnectionState { Stopped, Connecting, Connected, Reconnecting, Rejected }
 
 /// <summary>
 /// What the node is doing right now, for anything that wants to show it.
@@ -29,6 +35,21 @@ public sealed class NodeState
 
     /// <summary>Why not, when <see cref="Accepting"/> is false while running.</summary>
     public string? PauseReason { get; private set; }
+
+    /// <summary>
+    /// The owner pressed STOP while there was work to hand over. The node takes
+    /// nothing new, and keeps the relay open until what it has is delivered.
+    /// </summary>
+    public bool Draining { get; private set; }
+
+    /// <summary>What the drain is waiting for, in the owner's words. Null when not draining.</summary>
+    public string? DrainNote { get; private set; }
+
+    /// <summary>
+    /// What the owner has to do about the connection, when that is something
+    /// only they can do — set with <see cref="ConnectionState.Rejected"/>.
+    /// </summary>
+    public string? ConnectionNote { get; private set; }
 
     public GpuSnapshot Gpu { get; private set; } = GpuSnapshot.None;
 
@@ -68,13 +89,35 @@ public sealed class NodeState
         Changed?.Invoke();
     }
 
-    internal void SetConnection(ConnectionState c) => Set(s => s.Connection = c);
+    internal void SetConnection(ConnectionState c) => Set(s =>
+    {
+        // A refusal is sticky until something else is actually true: the loop
+        // that retries after one reports "reconnecting" in between, and the
+        // owner would lose the one line that tells them what to do.
+        if (s.Connection == ConnectionState.Rejected && c == ConnectionState.Reconnecting) return;
+        s.Connection = c;
+        if (c != ConnectionState.Rejected) s.ConnectionNote = null;
+    });
+
+    internal void SetRejected(string note) => Set(s =>
+    {
+        s.Connection = ConnectionState.Rejected;
+        s.ConnectionNote = note;
+    });
+
     internal void SetRunning(bool running) => Set(s =>
     {
         s.Running = running;
         s.SessionStartedAt = running ? (s.SessionStartedAt ?? DateTimeOffset.Now) : null;
-        if (!running) { s.Accepting = false; s.PauseReason = null; }
+        if (!running)
+        {
+            s.Accepting = false;
+            s.PauseReason = null;
+            s.Draining = false;
+            s.DrainNote = null;
+        }
     });
+    internal void SetDraining(bool draining, string? note) => Set(s => { s.Draining = draining; s.DrainNote = draining ? note : null; });
     internal void SetAccepting(bool accepting, string? reason) => Set(s => { s.Accepting = accepting; s.PauseReason = reason; });
     internal void SetGpu(GpuSnapshot g) => Set(s => s.Gpu = g);
     internal void SetCurrentJob(JobRecord? j) => Set(s => s.CurrentJob = j);

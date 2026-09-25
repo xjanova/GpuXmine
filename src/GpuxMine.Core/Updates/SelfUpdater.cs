@@ -142,7 +142,12 @@ public sealed class SelfUpdater
     /// the local runtime and closed the relay connection: whatever is still
     /// running from the install tree is what makes the rename fail.
     /// </remarks>
-    public void ApplyAndRestart()
+    /// <param name="restartArgs">
+    /// What the new build is started with. This used to be nothing at all, so
+    /// the window came back as if the owner had opened it by hand — not
+    /// sharing — and every release quietly switched the fleet off.
+    /// </param>
+    public void ApplyAndRestart(string[]? restartArgs = null)
     {
         if (_manager is null || _staged is null) return;
 
@@ -152,7 +157,7 @@ public sealed class SelfUpdater
         RecordAttempt(_staged.TargetFullRelease.Version.ToString());
 
         _log($"applying update {_staged.TargetFullRelease.Version} and restarting");
-        _manager.ApplyUpdatesAndRestart(_staged);
+        _manager.ApplyUpdatesAndRestart(_staged, restartArgs);
     }
 
     /// <summary>Clears the counter once we are demonstrably running the new build.</summary>

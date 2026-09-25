@@ -56,6 +56,7 @@ public sealed class MainViewModel : ObservableObject
         _acceptText = s.AcceptedJobTypes.Contains("text");
         _acceptVideo = s.AcceptedJobTypes.Contains("video");
         _acceptEmbed = s.AcceptedJobTypes.Contains("embed");
+        _acceptAudio = s.AcceptedJobTypes.Contains("audio");
         _currentScreen = s.LastScreen;
 
         for (int i = 0; i < NodeSettings.HoursPerWeek; i++)
@@ -128,11 +129,23 @@ public sealed class MainViewModel : ObservableObject
 
     public bool Running { get; private set; }
     public bool Accepting { get; private set; }
+    public bool Draining { get; private set; }
     public string? PauseReason { get; private set; }
     public string ConnectionText { get; private set; } = "IDLE · STOPPED";
-    public string DialText => Running ? "STOP" : "START";
-    public string DialSub => Running ? "sharing GPU" : "idle";
-    public bool ShowPauseReason => Running && !Accepting && PauseReason is not null;
+    public string DialText => Draining ? "STOPPING" : Running ? "STOP" : "START";
+    public string DialSub => Draining ? "finishing job" : Running ? "sharing GPU" : "idle";
+    // Not while draining or refused: those say something more useful below.
+    public bool ShowPauseReason => Running && !Accepting && !Draining && !IsRejected && PauseReason is not null;
+
+    /// <summary>The relay refused this machine; only re-pairing (or an operator) can fix it.</summary>
+    public bool IsRejected { get; private set; }
+
+    /// <summary>
+    /// What the owner should know about the connection that the badge cannot
+    /// say: why the relay refused, or what a stop is still waiting for.
+    /// </summary>
+    public string? ConnectionNote { get; private set; }
+    public bool HasConnectionNote => !string.IsNullOrEmpty(ConnectionNote);
 
     public string GpuName { get; private set; } = "ยังไม่พบการ์ดจอ";
     public string GpuDetail { get; private set; } = "";
@@ -156,7 +169,13 @@ public sealed class MainViewModel : ObservableObject
     public string LicenseText { get; private set; } = "ระดับฟรี";
     public string? UpdateStatus { get; private set; }
     public string StatusBarLeft { get; private set; } = "IDLE · STOPPED";
-    public string StatusBarPower => GpuMeasured ? $"power {PowerPercent}% · {PowerW} W" : $"power {PowerPercent}%";
+
+    /// <summary>
+    /// What the card is drawing, measured — and nothing else. It used to lead
+    /// with the power slider's percentage, which reads as a limit being
+    /// applied, and no limit is.
+    /// </summary>
+    public string StatusBarPower => GpuMeasured && PowerW > 0 ? $"draw {PowerW} W" : "draw —";
     public string StatusBarRight { get; private set; } = "";
 
     public string CurrentJobTitle { get; private set; } = "ไม่มีงาน";
@@ -181,14 +200,19 @@ public sealed class MainViewModel : ObservableObject
 
         Running = st.Running;
         Accepting = st.Accepting;
+        Draining = st.Draining;
         PauseReason = st.PauseReason;
+        IsRejected = st.Connection == ConnectionState.Rejected;
         ConnectionText = st.Connection switch
         {
+            _ when st.Draining => "STOPPING · HANDING OVER",
             ConnectionState.Connected => Accepting ? "SHARING · ACTIVE" : "CONNECTED · PAUSED",
             ConnectionState.Connecting => "CONNECTING…",
             ConnectionState.Reconnecting => "RECONNECTING…",
+            ConnectionState.Rejected => "REFUSED · RE-PAIR",
             _ => "IDLE · STOPPED",
         };
+        ConnectionNote = st.Draining ? st.DrainNote : IsRejected ? st.ConnectionNote : null;
         StatusBarLeft = ConnectionText;
 
         GpuMeasured = g.Measured;
@@ -254,6 +278,7 @@ public sealed class MainViewModel : ObservableObject
 
         foreach (var name in new[] {
             nameof(Running), nameof(Accepting), nameof(PauseReason), nameof(ConnectionText), nameof(DialText), nameof(DialSub), nameof(ShowPauseReason),
+            nameof(Draining), nameof(IsRejected), nameof(ConnectionNote), nameof(HasConnectionNote),
             nameof(GpuMeasured), nameof(GpuName), nameof(GpuDetail), nameof(DriverText), nameof(LoadPct), nameof(TempC), nameof(FanPct), nameof(PowerW),
             nameof(VramUsedGb), nameof(VramTotalGb), nameof(VramFraction), nameof(VramText),
             nameof(JobsTodayText), nameof(FailedTodayText), nameof(UptimeText), nameof(EarnedTodayText), nameof(LatencyText), nameof(LicenseText), nameof(UpdateStatus),
@@ -270,32 +295,90 @@ public sealed class MainViewModel : ObservableObject
 
     public RelayCommand ToggleSharing { get; }
 
-    private async Task ToggleSharingAsync()
-    {
-        if (!IsConfigured)
-        {
-            CurrentScreen = "settings";
-            return;
-        }
+    private bool _toggling;
 
-        if (_host.State.Running)
+    /// <summary>
+    /// The dial, and the tray menu's START/STOP. One path for both, so the
+    /// question the owner is asked does not depend on where they clicked.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// STOP drains: the node refuses new work at once and keeps the relay open
+    /// until what it already took has been collected. The old dialog promised
+    /// exactly that — "the current job continues until it is done" — while the
+    /// code closed the socket on the spot, so the finished render could never
+    /// be collected and the owner was not paid for it.
+    /// </para>
+    /// <para>
+    /// "Stop now" is still offered, named for what it costs.
+    /// </para>
+    /// </remarks>
+    public async Task ToggleSharingAsync()
+    {
+        // A second click while the first is still deciding must not open a
+        // second dialog, or start and stop in the same breath.
+        if (_toggling) return;
+        _toggling = true;
+        try
         {
-            // Stopping mid-render forfeits that job's payout; the owner should
-            // know before they lose it. Nothing is forfeited when idle.
-            if (_host.Runtime.IsBusy)
+            if (!IsConfigured)
             {
-                var ok = MessageBox.Show(
-                    "กำลังเรนเดอร์งานอยู่ ถ้าหยุดตอนนี้งานปัจจุบันจะทำต่อจนเสร็จแต่จะไม่รับงานใหม่\n\nหยุดแชร์เลยไหม?",
-                    "หยุดแชร์", MessageBoxButton.YesNo, MessageBoxImage.Question);
-                if (ok != MessageBoxResult.Yes) return;
+                CurrentScreen = "settings";
+                ShowWindowIfHidden();
+                return;
             }
-            await _host.StopAsync();
+
+            var st = _host.State;
+            if (st.Draining)
+            {
+                var answer = MessageBox.Show(
+                    "กำลังหยุดแชร์ — เครื่องไม่รับงานใหม่แล้ว และกำลังส่งงานที่รับไว้ให้ครบ\n\n"
+                    + "ใช่ — กลับมาแชร์ต่อ\n"
+                    + "ไม่ — หยุดทันที งานที่ยังไม่ได้ส่งจะไม่ได้รับค่าตอบแทน\n"
+                    + "ยกเลิก — รอต่อไปจนส่งครบ",
+                    "หยุดแชร์", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+                if (answer == MessageBoxResult.Yes) await _host.OwnerStartAsync();
+                else if (answer == MessageBoxResult.No) await _host.OwnerStopAsync(now: true);
+            }
+            else if (st.Running)
+            {
+                bool now = false;
+                // Nothing is forfeited when idle, so nothing is asked: the stop
+                // waits only for a result aixman has yet to collect.
+                if (_host.Runtime.IsWorking)
+                {
+                    var answer = MessageBox.Show(
+                        "เครื่องกำลังทำงานของลูกค้าอยู่\n\n"
+                        + "ใช่ — หยุดรับงานใหม่ ทำงานนี้ให้เสร็จและส่งให้ลูกค้าก่อน แล้วค่อยหยุด (แนะนำ ได้รับค่าตอบแทนตามปกติ)\n"
+                        + "ไม่ — หยุดทันที งานนี้จะไม่ถูกส่งและไม่ได้รับค่าตอบแทน\n"
+                        + "ยกเลิก — แชร์ต่อ",
+                        "หยุดแชร์", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+                    if (answer == MessageBoxResult.Cancel) return;
+                    now = answer == MessageBoxResult.No;
+                }
+                // Not awaited to the end: a drain can take as long as the
+                // render, and the dial must show "stopping" meanwhile.
+                _ = _host.OwnerStopAsync(now);
+            }
+            else
+            {
+                await _host.OwnerStartAsync();
+            }
         }
-        else
+        finally
         {
-            await _host.StartAsync();
+            _toggling = false;
+            Pull();
         }
-        Pull();
+    }
+
+    private void ShowWindowIfHidden()
+    {
+        if (Application.Current?.MainWindow is { } window && !window.IsVisible)
+        {
+            window.Show();
+            window.Activate();
+        }
     }
 
     // ------------------------------------------------------------ settings (two-way)
@@ -325,13 +408,25 @@ public sealed class MainViewModel : ObservableObject
     public string AutoMatchTitle => AutoMatch ? "Auto job matching — ON" : "Auto job matching — OFF";
     public string AutoMatchSub => AutoMatch ? "งานถูกจับคู่กับการ์ดของคุณอัตโนมัติ" : "คุณเลือกชนิดงานเองด้านล่าง";
 
-    private bool _acceptImage, _acceptUpscale, _acceptText, _acceptVideo, _acceptEmbed;
+    private bool _acceptImage, _acceptUpscale, _acceptText, _acceptVideo, _acceptEmbed, _acceptAudio;
     public bool AcceptImage { get => _acceptImage; set { if (Set(ref _acceptImage, value)) SetJobType("image", value); } }
     public bool AcceptUpscale { get => _acceptUpscale; set { if (Set(ref _acceptUpscale, value)) SetJobType("upscale", value); } }
     public bool AcceptText { get => _acceptText; set { if (Set(ref _acceptText, value)) SetJobType("text", value); } }
     public bool AcceptVideo { get => _acceptVideo; set { if (Set(ref _acceptVideo, value)) SetJobType("video", value); } }
     public bool AcceptEmbed { get => _acceptEmbed; set { if (Set(ref _acceptEmbed, value)) SetJobType("embed", value); } }
-    private void SetJobType(string kind, bool on) { if (on) _host.Settings.AcceptedJobTypes.Add(kind); else _host.Settings.AcceptedJobTypes.Remove(kind); SaveSoon(); }
+    public bool AcceptAudio { get => _acceptAudio; set { if (Set(ref _acceptAudio, value)) SetJobType("audio", value); } }
+
+    /// <remarks>
+    /// Replaced, not edited in place: the heartbeat and readiness read this set
+    /// from other threads, and a HashSet changed under a reader can throw.
+    /// </remarks>
+    private void SetJobType(string kind, bool on)
+    {
+        var next = new HashSet<string>(_host.Settings.AcceptedJobTypes, StringComparer.Ordinal);
+        if (on) next.Add(kind); else next.Remove(kind);
+        _host.Settings.AcceptedJobTypes = next;
+        SaveSoon();
+    }
     public bool VideoFitsCard => VramTotalGb >= 16;
 
     private decimal _tariff, _offPeakRate;
@@ -845,16 +940,16 @@ public sealed class MainViewModel : ObservableObject
 
             if (ok)
             {
+                // Applied and sharing already — the host does both in this
+                // process. It used to restart the program to apply them, and
+                // the restart could lose a race with its own single-instance
+                // lock and leave nothing running at all.
                 PairingCode = "";
-                PairingStatus = message + " — กำลังเริ่มโปรแกรมใหม่เพื่อใช้ค่าที่ลงทะเบียน";
+                _repairing = false;
+                PairingStatus = message + " — เริ่มแชร์แล้ว";
                 Raise(nameof(PairingStatus));
-
-                // The identity is read at startup, and the relay connection is
-                // built from it. Restarting is both the simplest way to apply it
-                // and the only one that cannot leave a half-configured node
-                // holding a job.
-                await Task.Delay(1500);
-                Restart();
+                _ = LoadReferralAsync();
+                OfferAutostart();
             }
         }
         catch (Exception ex)
@@ -869,20 +964,21 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
-    private static void Restart()
+    /// <summary>
+    /// Asked once, right after a pairing: a node that does not start with
+    /// Windows stops earning at the first reboot, and its owner is the last to
+    /// find out. Asked, not assumed — it is their PC's login.
+    /// </summary>
+    private void OfferAutostart()
     {
-        try
-        {
-            string? exe = Environment.ProcessPath;
-            if (exe is not null) Process.Start(new ProcessStartInfo(exe) { UseShellExecute = true });
-        }
-        catch
-        {
-            // Could not relaunch — the owner opens it again themselves, and the
-            // identity file is already written, so it comes back paired either way.
-        }
+        if (StartWithWindows || Shell.DesktopIntegration.IsAutostartEnabled()) return;
 
-        Application.Current.Shutdown();
+        var answer = MessageBox.Show(
+            "ลงทะเบียนเรียบร้อยและเริ่มแชร์แล้ว\n\n"
+            + "ให้โปรแกรมเปิดเองทุกครั้งที่เปิดเครื่องไหม? (อยู่ที่ถาดไอคอน ไม่เด้งหน้าต่าง และแชร์ต่อตามที่ตั้งไว้)\n"
+            + "ถ้าไม่เปิด เครื่องจะหยุดรับงานทุกครั้งที่รีสตาร์ตจนกว่าจะเปิดโปรแกรมเอง",
+            "เปิดพร้อม Windows", MessageBoxButton.YesNo, MessageBoxImage.Question);
+        if (answer == MessageBoxResult.Yes) StartWithWindows = true;
     }
 
     // ---------------------------------------------------- machine assessment

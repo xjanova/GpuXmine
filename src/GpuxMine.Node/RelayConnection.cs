@@ -37,10 +37,22 @@ public sealed class RelayConnection(
     private static readonly string AgentVersion =
         typeof(RelayConnection).Assembly.GetName().Version?.ToString(3) ?? "0.1.0";
 
-    /// <summary>How long to wait before trying again after the relay said 401 or 403.</summary>
+    /// <summary>How long to wait before trying again after the relay said 401 or 403, doubling on each refusal in a row.</summary>
     private static readonly TimeSpan RefusedBackoff = TimeSpan.FromMinutes(5);
 
+    /// <summary>The longest a refused node waits. An operator who re-enables a worker should not wait longer than this.</summary>
+    private static readonly TimeSpan RefusedBackoffMax = TimeSpan.FromMinutes(30);
+
     private readonly SemaphoreSlim _writeGate = new(1, 1);
+
+    private int _inFlight;
+
+    /// <summary>
+    /// Requests from the relay being worked on or answered right now. A stop
+    /// that waits for delivery waits for this to reach zero, so the file
+    /// aixman is halfway through downloading is not cut off.
+    /// </summary>
+    public int InFlight => Volatile.Read(ref _inFlight);
 
     /// <summary>What one connection learned from the relay, and what is running on it.</summary>
     private sealed class Session(ClientWebSocket socket, CancellationToken token)
@@ -60,6 +72,7 @@ public sealed class RelayConnection(
     public async Task RunForeverAsync(CancellationToken ct)
     {
         int attempt = 0;
+        int refusals = 0;
         while (!ct.IsCancellationRequested)
         {
             TimeSpan? wait = null;
@@ -67,6 +80,7 @@ public sealed class RelayConnection(
             {
                 await ConnectOnceAsync(ct);
                 attempt = 0; // a session that actually ran resets the backoff
+                refusals = 0;
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -78,7 +92,12 @@ public sealed class RelayConnection(
                     ? "relay refused this worker: it has been disabled (HTTP 403)"
                     : "relay refused this worker: unknown worker or wrong token — pair the machine again (HTTP 401)");
                 Refused?.Invoke(ex.Status);
-                wait = RefusedBackoff;
+                // Knocking every five minutes forever is a node nobody will
+                // ever let in, costing the relay a handshake each time.
+                wait = TimeSpan.FromTicks(Math.Min(
+                    RefusedBackoff.Ticks * (1L << Math.Min(refusals, 3)),
+                    RefusedBackoffMax.Ticks));
+                refusals++;
             }
             catch (Exception ex)
             {
@@ -261,6 +280,7 @@ public sealed class RelayConnection(
     {
         using var request = CancellationTokenSource.CreateLinkedTokenSource(session.Token);
         if (header.Id is not null) session.Running[header.Id] = request;
+        Interlocked.Increment(ref _inFlight);
 
         try
         {
@@ -305,6 +325,7 @@ public sealed class RelayConnection(
         }
         finally
         {
+            Interlocked.Decrement(ref _inFlight);
             if (header.Id is not null)
                 session.Running.TryRemove(new KeyValuePair<string, CancellationTokenSource>(header.Id, request));
         }

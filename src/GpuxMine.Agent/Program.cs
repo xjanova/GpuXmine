@@ -27,7 +27,11 @@ var options = NodeConfiguration.Build(args);
 // The same lock the window takes. Running the agent and the window against one
 // data directory is the pairing that corrupted the ledger on the development
 // machine, and neither of them could tell it was happening.
-using var instance = NodeInstanceLock.TryAcquire(options.DataDirectory);
+//
+// Started by an update, the old process may still be on its way out; waiting
+// for it beats deciding it is a second copy and leaving the rig with none.
+using var instance = NodeInstanceLock.TryAcquire(options.DataDirectory,
+    LaunchFlags.Has(args, LaunchFlags.AfterRestart) ? LaunchFlags.RestartWait : TimeSpan.Zero);
 if (instance is null)
 {
     Console.Error.WriteLine($"มีโหนดตัวอื่นใช้โฟลเดอร์นี้อยู่แล้ว: {options.DataDirectory}");
@@ -93,8 +97,26 @@ if (args.FirstOrDefault(a => a.Equals("--pair", StringComparison.OrdinalIgnoreCa
     return 0;
 }
 
-if (!options.Validate(out string error))
+// Headless has no card sensing of its own yet — that is the Windows-only
+// Hardware project, which the WPF app wires in. The Linux build gets an
+// nvidia-smi source later. Until then the pool sees this node's presence and
+// jobs, just not its temperatures.
+// No GPU sensing and no user-activity sensing here — those need Win32, and this
+// binary is the one that also runs on Linux. The power ceiling is not Win32
+// though: it comes from the driver's own tool, and a headless node that cannot
+// report it is a node whose score nobody can explain.
+//
+// Built before the configuration is judged, not after: the host reconciles the
+// identity against the ledger as it opens, and a rig whose agent.json could not
+// be read this once is paired again by the time the check below runs. It used
+// to be judged on the raw file and exit — the rig came up at login, found the
+// file busy, and sat there not running at all.
+var host = new NodeHost(options, telemetry: null, activity: null,
+    alsoLogTo: new ConsoleLog(), health: new NvidiaPowerHealth());
+
+if (!host.Options.Validate(out string error))
 {
+    await host.DisposeAsync();
     Console.Error.WriteLine($"""
         GPUxMINE agent {SelfUpdater.CurrentVersion} — configuration error: {error}
 
@@ -125,22 +147,14 @@ Console.CancelKeyPress += (_, e) =>
 };
 AppDomain.CurrentDomain.ProcessExit += (_, _) => stopping.Cancel();
 
-// Headless has no card sensing of its own yet — that is the Windows-only
-// Hardware project, which the WPF app wires in. The Linux build gets an
-// nvidia-smi source later. Until then the pool sees this node's presence and
-// jobs, just not its temperatures.
-// No GPU sensing and no user-activity sensing here — those need Win32, and this
-// binary is the one that also runs on Linux. The power ceiling is not Win32
-// though: it comes from the driver's own tool, and a headless node that cannot
-// report it is a node whose score nobody can explain.
-var host = new NodeHost(options, telemetry: null, activity: null,
-    alsoLogTo: new ConsoleLog(), health: new NvidiaPowerHealth());
 host.UpdateReady += () => stopping.Cancel();
 
 await host.RunAsync(stopping.Token);
 await host.DisposeAsync();
 
-// Applied only now, after the relay socket and the runtime are down.
-host.ApplyPendingUpdate();
+// Applied only now, after the relay socket and the runtime are down. The new
+// build is started with the same arguments this one was, and told to wait for
+// this process to let go of the data directory.
+host.ApplyPendingUpdate(LaunchFlags.ForRestart(args, LaunchFlags.AfterRestart));
 
 return 0;

@@ -24,8 +24,9 @@ namespace GpuxMine.Node;
 ///     whole of it.</item>
 ///   <item><b>A session</b> — from <see cref="StartAsync"/> to
 ///     <see cref="StopAsync"/>: the relay connection. The owner's START/STOP
-///     dial. Stopping never kills a render in flight; it stops taking new
-///     work and lets the relay socket close.</item>
+///     dial. The owner's STOP is a drain (<see cref="OwnerStopAsync"/>): new
+///     work is refused at once, and the relay socket stays open until what
+///     the node already took has been rendered and collected.</item>
 /// </list>
 /// </remarks>
 public sealed class NodeHost : IAsyncDisposable
@@ -34,6 +35,38 @@ public sealed class NodeHost : IAsyncDisposable
     public static readonly TimeSpan SensePeriod = TimeSpan.FromMilliseconds(1400);
 
     private static readonly TimeSpan IdleGrace = TimeSpan.FromSeconds(120);
+
+    /// <summary>
+    /// How long a job the ledger holds open may be missing from ComfyUI —
+    /// neither queued nor in its history — before it is written off as failed.
+    /// </summary>
+    /// <remarks>
+    /// Long, because a row from an earlier run cannot be told apart from one
+    /// ComfyUI simply has not reached. A prompt this process is still tracking
+    /// is written off much sooner — see <see cref="SettleOneAsync"/>.
+    /// </remarks>
+    private static readonly TimeSpan LostAfter = TimeSpan.FromHours(6);
+
+    /// <summary>How often a drain looks again. It only reads memory, so it can afford to look often.</summary>
+    private static readonly TimeSpan DrainPoll = TimeSpan.FromMilliseconds(500);
+
+    /// <summary>
+    /// How long a stop keeps the relay open after the last customer render
+    /// ends. aixman reads the result through the tunnel — <c>/history</c>, then
+    /// <c>/view</c> for every file, then <c>/aixman/purge</c> — and it does so on
+    /// its own tick, not the instant the render ends.
+    /// </summary>
+    internal TimeSpan DrainGrace { get; set; } = TimeSpan.FromSeconds(90);
+
+    /// <summary>
+    /// The longest a stop waits. Past aixman's own job timeout the job has been
+    /// given up on anyway, and a render that never ends must not keep a node
+    /// its owner stopped connected for ever.
+    /// </summary>
+    internal TimeSpan DrainLimit { get; set; } = TimeSpan.FromMinutes(45);
+
+    /// <summary>The ledger setting that remembers when this build first ran, which bounds the purge fallback.</summary>
+    private const string PurgeSinceKey = "purge-fallback-since";
 
     public NodeOptions Options { get; private set; }
     public NodeSettings Settings { get; }
@@ -52,8 +85,17 @@ public sealed class NodeHost : IAsyncDisposable
     private readonly CancellationTokenSource _hostCts = new();
     private readonly List<Task> _background = [];
 
+    /// <summary>Guards the session fields below: START, STOP and a drain can race from the window, the tray and the updater.</summary>
+    private readonly Lock _sessionGate = new();
     private CancellationTokenSource? _sessionCts;
     private Task? _sessionTask;
+    private RelayConnection? _connection;
+
+    private CancellationTokenSource? _drainCts;
+    private Task? _drainTask;
+    private volatile bool _draining;
+    private volatile string? _drainReason;
+
     private MockComfy? _mock;
     private DateTimeOffset _lastUserInput = DateTimeOffset.MinValue;
 
@@ -114,6 +156,10 @@ public sealed class NodeHost : IAsyncDisposable
         Runtime = new ComfyRuntime(options, Log, Decide);
         Runtime.Job += OnJobEvent;
         Runtime.AssessmentSource = AssessmentForDispatch;
+        Runtime.OffersKind = Offers;
+        // The ledger is what lets a purge tell a customer's prompt from the
+        // owner's own, including prompts from before the last restart.
+        Runtime.Ledger = Store;
 
         _studio = new XmanStudioClient(_http, options.XmanStudioUrl, log: message => Log.Warn(message));
         Updater = new SelfUpdater(options.UpdateRepo, options.DataDirectory, Log.Warn);
@@ -134,48 +180,324 @@ public sealed class NodeHost : IAsyncDisposable
         }
 
         _background.Add(Guard(Runtime.TrackProgressAsync(_hostCts.Token), "progress tracker"));
+        _background.Add(Guard(Runtime.WatchQueueAsync(_hostCts.Token), "comfyui queue"));
         _background.Add(Guard(AssessLoopAsync(_hostCts.Token), "machine assessment"));
         _background.Add(Guard(SenseLoopAsync(_hostCts.Token), "sensing"));
+        _background.Add(Guard(RegisterDeviceLoopAsync(_hostCts.Token), "device registration"));
         _background.Add(Guard(StudioLoopAsync(_hostCts.Token), "xman studio"));
         _background.Add(Guard(SweepLoopAsync(_hostCts.Token), "database sweep"));
         _background.Add(Guard(ReconcileLoopAsync(_hostCts.Token), "ledger reconcile"));
+        _background.Add(Guard(PurgeLoopAsync(_hostCts.Token), "job purge"));
         if (Options.AutoUpdate)
             _background.Add(Guard(UpdateLoopAsync(_hostCts.Token), "updates"));
     }
 
-    /// <summary>The owner's START. Idempotent: pressing it twice does not open two connections.</summary>
+    /// <summary>
+    /// Opens the relay session. Idempotent: pressing it twice does not open two
+    /// connections, and pressing it during a stop cancels the stop.
+    /// </summary>
+    /// <remarks>
+    /// Not the owner's START on its own — that is <see cref="OwnerStartAsync"/>,
+    /// which also remembers the choice. This is what a launch that resumes
+    /// sharing, the headless agent and a finished pairing call.
+    /// </remarks>
     public Task StartAsync()
     {
-        if (_sessionCts is not null) return Task.CompletedTask;
+        CancellationTokenSource? abandoned = null;
+        lock (_sessionGate)
+        {
+            if (_draining)
+            {
+                abandoned = ResumeFromDrainLocked();
+            }
+            else if (_sessionCts is not null)
+            {
+                return Task.CompletedTask;
+            }
+            else if (!Options.Validate(out string error))
+            {
+                // Checked here and not only by the callers: the ledger may
+                // have rescued an identity the window never saw, or lost one
+                // the window thought it had, and a relay loop started without
+                // one knocks with an empty token for ever.
+                Log.Warn($"[net] เริ่มแชร์ไม่ได้ — {error} · ลงทะเบียนเครื่องในหน้า Settings ก่อน");
+                return Task.CompletedTask;
+            }
+            else
+            {
+                _sessionCts = CancellationTokenSource.CreateLinkedTokenSource(_hostCts.Token);
+                var connection = new RelayConnection(Options, Runtime, Log, HeartbeatPayload);
+                connection.ConnectedChanged += up =>
+                    State.SetConnection(up ? ConnectionState.Connected : (State.Running ? ConnectionState.Reconnecting : ConnectionState.Stopped));
+                connection.Refused += OnRelayRefused;
+                _connection = connection;
 
-        _sessionCts = CancellationTokenSource.CreateLinkedTokenSource(_hostCts.Token);
-        var connection = new RelayConnection(Options, Runtime, Log, HeartbeatPayload);
-        connection.ConnectedChanged += up =>
-            State.SetConnection(up ? ConnectionState.Connected : (State.Running ? ConnectionState.Reconnecting : ConnectionState.Stopped));
+                State.SetRunning(true);
+                State.SetConnection(ConnectionState.Connecting);
+                Log.Info("[net] sharing started");
 
-        State.SetRunning(true);
-        State.SetConnection(ConnectionState.Connecting);
-        Log.Info("[net] sharing started");
+                _sessionTask = Guard(connection.RunForeverAsync(_sessionCts.Token), "relay session");
+            }
+        }
 
-        _sessionTask = Guard(connection.RunForeverAsync(_sessionCts.Token), "relay session");
+        if (abandoned is not null)
+        {
+            // Outside the lock: cancelling can run the drain's own
+            // continuation on this thread, and that is not the place to hold it.
+            try { abandoned.Cancel(); } catch (ObjectDisposedException) { /* finished meanwhile */ }
+            Log.Info("[net] ยกเลิกการหยุด — กลับมารับงานต่อ");
+        }
+        Reevaluate();
         return Task.CompletedTask;
     }
 
-    /// <summary>The owner's STOP. The running render, if any, is left to finish.</summary>
-    public async Task StopAsync()
-    {
-        var cts = _sessionCts;
-        if (cts is null) return;
-        _sessionCts = null;
+    /// <summary>
+    /// Closes the relay session now. Whatever is rendering keeps rendering, but
+    /// aixman can no longer collect it — the owner's STOP goes through
+    /// <see cref="OwnerStopAsync"/>, which waits for delivery first.
+    /// </summary>
+    public Task StopAsync() => StopSessionAsync(onlyForDrain: null);
 
-        Log.Info("[net] sharing stopped by owner");
-        await cts.CancelAsync();
-        if (_sessionTask is not null)
-            await Task.WhenAny(_sessionTask, Task.Delay(TimeSpan.FromSeconds(5)));
-        cts.Dispose();
+    /// <param name="onlyForDrain">
+    /// Stop only if this is still the drain in charge. A drain that has just
+    /// decided to stop can lose a race with the owner pressing START again, and
+    /// must then leave the session they resumed alone.
+    /// </param>
+    private async Task StopSessionAsync(CancellationTokenSource? onlyForDrain)
+    {
+        CancellationTokenSource? session, drain;
+        Task? running;
+        lock (_sessionGate)
+        {
+            if (onlyForDrain is not null && !ReferenceEquals(_drainCts, onlyForDrain)) return;
+
+            session = _sessionCts;
+            if (session is null) return;
+            _sessionCts = null;
+            running = _sessionTask;
+            _sessionTask = null;
+            _connection = null;
+
+            drain = _drainCts;
+            _drainCts = null;
+            _drainTask = null;
+            _draining = false;
+            _drainReason = null;
+        }
+
+        // Stopping from the outside ends a drain that is still waiting.
+        if (drain is not null && !ReferenceEquals(drain, onlyForDrain))
+        {
+            try { await drain.CancelAsync(); } catch (ObjectDisposedException) { /* it finished meanwhile */ }
+        }
+
+        Log.Info("[net] sharing stopped");
+        await session.CancelAsync();
+        if (running is not null)
+            await Task.WhenAny(running, Task.Delay(TimeSpan.FromSeconds(5)));
+        session.Dispose();
 
         State.SetRunning(false);
         State.SetConnection(ConnectionState.Stopped);
+    }
+
+    // ------------------------------------------------------------ the switch
+
+    /// <summary>
+    /// Whether a launch should start sharing on its own: the machine is paired
+    /// and the owner's switch was left on — see <see cref="NodeSettings.SharingEnabled"/>.
+    /// </summary>
+    public bool ShouldResumeSharing => Options.Validate(out _) && (Settings.SharingEnabled ?? true);
+
+    /// <summary>
+    /// Called once at launch, however the program was started — at login, from
+    /// the Start menu, by an update, after a pairing.
+    /// </summary>
+    /// <returns>True when sharing was started.</returns>
+    public bool ResumeSharingIfEnabled()
+    {
+        if (!ShouldResumeSharing) return false;
+
+        if (Settings.SharingEnabled is null)
+        {
+            // Settle what an earlier build left unsaid, so the next launch
+            // reads a decision rather than a default.
+            RememberSharing(true);
+            Log.Info("[net] เปิดแชร์ต่อจากรุ่นก่อน — กดหยุดเมื่อไรเครื่องจะจำไว้");
+        }
+        else
+        {
+            Log.Info("[net] กลับมาแชร์ต่ออัตโนมัติ — ครั้งก่อนเปิดแชร์ค้างไว้");
+        }
+
+        _ = StartAsync();
+        return true;
+    }
+
+    /// <summary>The owner's START: shares now, and on every launch after this until they press STOP.</summary>
+    public Task OwnerStartAsync()
+    {
+        RememberSharing(true);
+        return StartAsync();
+    }
+
+    /// <summary>
+    /// The owner's STOP: remembered, so the next launch does not undo it.
+    /// </summary>
+    /// <param name="now">
+    /// Drop the connection at once, forfeiting whatever is in flight. The
+    /// default hands it over first — a render that finishes while the node is
+    /// offline can never be collected, and the owner is not paid for it.
+    /// </param>
+    public Task OwnerStopAsync(bool now = false)
+    {
+        RememberSharing(false);
+        return now ? StopAsync() : DrainAsync();
+    }
+
+    private void RememberSharing(bool on)
+    {
+        if (Settings.SharingEnabled == on) return;
+        Settings.SharingEnabled = on;
+        try
+        {
+            Settings.Save(Store);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"[cfg] จำสถานะการแชร์ไม่ได้: {ex.Message}");
+        }
+    }
+
+    // ------------------------------------------------------------------ drain
+
+    /// <summary>
+    /// Stops taking work, finishes and hands over what the node already has,
+    /// then closes the session.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// STOP used to close the relay socket on the spot, while its own dialog
+    /// told the owner the current job would finish. It did finish — on a
+    /// machine aixman could no longer reach, so the result was never
+    /// collected, the customer's job was redone elsewhere, and the owner's
+    /// history showed DONE for work nobody paid for.
+    /// </para>
+    /// <para>
+    /// While draining, readiness and every new submission answer
+    /// <c>503 {stage: "draining"}</c>, and the session stays up until no
+    /// customer prompt is open, no request is being answered, and
+    /// <see cref="DrainGrace"/> has passed since the last render ended.
+    /// </para>
+    /// </remarks>
+    /// <returns>A task that completes when the session has closed, or when the drain was cancelled by a START.</returns>
+    public Task DrainAsync(string? reason = null)
+    {
+        Task drain;
+        string why = reason ?? "กำลังหยุดแชร์ — ทำงานที่รับไว้ให้เสร็จและส่งให้ครบก่อน";
+        lock (_sessionGate)
+        {
+            if (_sessionCts is null) return Task.CompletedTask;
+            if (_drainTask is not null) return _drainTask;
+
+            _draining = true;
+            _drainReason = why;
+            // Before the drain starts, not after: one with nothing to wait for
+            // stops the session at once, and a flag raised after that would
+            // leave the screen saying "stopping" over a node that has stopped.
+            State.SetDraining(true, why);
+
+            var cts = CancellationTokenSource.CreateLinkedTokenSource(_hostCts.Token);
+            _drainCts = cts;
+            // Off this thread: the drain may find nothing to wait for and stop
+            // straight away, and that path takes this same lock.
+            drain = _drainTask = Task.Run(() => DrainThenStopAsync(cts));
+        }
+
+        Log.Info($"[net] หยุดรับงานใหม่ — {why}");
+        Reevaluate();
+        return drain;
+    }
+
+    /// <summary>A drain is waiting for work to be handed over.</summary>
+    public bool Draining => _draining;
+
+    /// <returns>The drain being abandoned, for the caller to cancel once it has let go of the lock.</returns>
+    private CancellationTokenSource? ResumeFromDrainLocked()
+    {
+        CancellationTokenSource? drain = _drainCts;
+        _drainCts = null;
+        _drainTask = null;
+        _draining = false;
+        _drainReason = null;
+        State.SetDraining(false, null);
+        return drain;
+    }
+
+    private async Task DrainThenStopAsync(CancellationTokenSource cts)
+    {
+        DateTimeOffset began = DateTimeOffset.UtcNow;
+        try
+        {
+            while (true)
+            {
+                string? waiting = HandoverPending();
+                if (waiting is null) break;
+
+                if (DateTimeOffset.UtcNow - began > DrainLimit)
+                {
+                    Log.Warn($"[net] รอส่งงานนานเกิน {DrainLimit.TotalMinutes:0} นาที — หยุดแชร์โดยไม่รอต่อ");
+                    break;
+                }
+
+                lock (_sessionGate)
+                {
+                    // Only while still in charge: a START in between has
+                    // already cleared the flag, and must not see it come back.
+                    if (!ReferenceEquals(_drainCts, cts)) return;
+                    State.SetDraining(true, waiting);
+                }
+                await Task.Delay(DrainPoll, cts.Token);
+            }
+
+            if (cts.IsCancellationRequested) return;
+            await StopSessionAsync(onlyForDrain: cts);
+        }
+        catch (OperationCanceledException)
+        {
+            // Resumed by START, stopped outright, or the host is going away.
+        }
+        finally
+        {
+            cts.Dispose();
+        }
+    }
+
+    /// <summary>What a drain is still waiting for, in the owner's words, or null when everything has been handed over.</summary>
+    private string? HandoverPending()
+    {
+        if (Runtime.IsWorking)
+            return "กำลังหยุดแชร์ — รอให้งานที่รับไว้เรนเดอร์เสร็จ";
+
+        if ((_connection?.InFlight ?? 0) > 0)
+            return "กำลังหยุดแชร์ — กำลังส่งผลงานให้ pool";
+
+        // aixman purging the job is aixman saying it has the result; only an
+        // aixman that predates purge leaves the node to wait out the grace.
+        TimeSpan since = DateTimeOffset.UtcNow - Runtime.LastTunnelFinishedAt;
+        if (since < DrainGrace && !Runtime.CollectedSinceLastFinish)
+            return $"กำลังหยุดแชร์ — รอ pool เก็บผลงานที่เพิ่งเสร็จ (อีก {(DrainGrace - since).TotalSeconds:0} วินาที)";
+
+        return null;
+    }
+
+    private void OnRelayRefused(int status)
+    {
+        string note = status == 403
+            ? "ผู้ดูแลระบบปิดการใช้งานเครื่องนี้ที่ relay — ติดต่อ XMAN Studio หรือจับคู่เครื่องใหม่ในหน้า Settings"
+            : "relay ไม่รู้จักเครื่องนี้แล้ว (รหัสเครื่องถูกลบหรือเปลี่ยน) — ลงทะเบียนเครื่องใหม่ในหน้า Settings";
+        State.SetRejected(note);
+        Log.Warn($"[net] {note}");
     }
 
     /// <summary>Headless: start, run until cancelled, stop.</summary>
@@ -207,9 +529,13 @@ public sealed class NodeHost : IAsyncDisposable
     // ------------------------------------------------------------- decisions
 
     /// <summary>Would this node take a new job this second, and if not, why.</summary>
-    private AcceptDecision Decide()
+    internal AcceptDecision Decide()
     {
         if (!State.Running) return new AcceptDecision(false, "หยุดแชร์อยู่");
+
+        // STOP pressed with work still to hand over. Said as its own stage so
+        // aixman can tell "going away" from "back in a minute".
+        if (_draining) return new AcceptDecision(false, _drainReason ?? "กำลังหยุดแชร์", ReadyStage.Draining);
 
         // The benchmark has the card. Taking a job on top of it would both slow
         // the render and measure the machine as slower than it is.
@@ -219,7 +545,14 @@ public sealed class NodeHost : IAsyncDisposable
         // to be said here too — otherwise the owner's screen reads "ACCEPTING"
         // while the pool is being told 503, and the node looks broken to the
         // one person who could fix it.
-        if (AssessmentForDispatch() is { Report: null, Reason: { } why }) return new AcceptDecision(false, why);
+        var (report, why) = AssessmentForDispatch();
+        if (report is null) return new AcceptDecision(false, why, ReadyStage.Unassessed);
+
+        // The owner turned auto-matching off and ticked only kinds this card
+        // cannot do. Accepting here would advertise a machine with nothing on
+        // offer.
+        if (!report.Capabilities.Any(c => c.CanRun && Offers(c.Kind)))
+            return new AcceptDecision(false, "ไม่ได้เลือกรับงานประเภทที่เครื่องนี้ทำได้ — เลือกได้ที่หน้า Models & Jobs");
 
         if (Settings.ScheduleOnly && !Settings.IsScheduledNow(DateTime.Now))
             return new AcceptDecision(false, "นอกตารางเวลาแชร์");
@@ -241,6 +574,19 @@ public sealed class NodeHost : IAsyncDisposable
         return AcceptDecision.Yes;
     }
 
+    /// <summary>
+    /// Whether the owner offers this kind of work. With auto-matching on, every
+    /// kind the card can do; with it off, only the kinds ticked in Models &amp; Jobs.
+    /// </summary>
+    /// <remarks>
+    /// These controls used to change nothing: an owner who unticked video, or
+    /// turned auto-matching off, was still listed to the pool for everything
+    /// the card could do. The filter is applied to what the heartbeat and
+    /// readiness advertise, which is what the dispatcher chooses from.
+    /// </remarks>
+    private bool Offers(string kind) =>
+        Settings.AutoMatch || Settings.AcceptedJobTypes.Contains(kind);
+
     private void Reevaluate()
     {
         var d = Decide();
@@ -252,10 +598,12 @@ public sealed class NodeHost : IAsyncDisposable
         }
     }
 
-    private AgentTelemetry HeartbeatPayload()
+    internal AgentTelemetry HeartbeatPayload()
     {
         var g = State.Gpu;
         var (report, _) = AssessmentForDispatch();
+        var offered = report?.Capabilities.Where(c => c.CanRun && Offers(c.Kind)).ToArray() ?? [];
+        int? queued = Runtime.QueueRemaining;
 
         return new AgentTelemetry
         {
@@ -270,6 +618,11 @@ public sealed class NodeHost : IAsyncDisposable
             TempC = g.TempC,
             PowerW = g.PowerW,
             Accepting = State.Accepting,
+            // What aixman's database cannot see: a customer render in flight
+            // here, or the owner's own batch in ComfyUI's queue. The queue
+            // figure is the last one read; the heartbeat cannot wait on a call.
+            Busy = Runtime.IsWorking || queued > 0,
+            QueueRemaining = queued,
             FreeSharePct = Settings.FreeSharePercent,
 
             // What the back office lists this machine by. `Assessed` is the
@@ -278,12 +631,14 @@ public sealed class NodeHost : IAsyncDisposable
             Assessed = report is not null,
             Score = report?.Score ?? 0,
             Tier = report?.Tier ?? Assessment?.Tier ?? "unrated",
-            CanRun = report?.Capabilities.Where(c => c.CanRun).Select(c => c.Kind).ToArray() ?? [],
+            // What the owner offers, not only what the card can do: a kind
+            // unticked in Models & Jobs is left out of all three lists.
+            CanRun = offered.Select(c => c.Kind).ToArray(),
             // Sent alongside, not instead: the pool has to be able to tell a
             // machine that makes an image in twelve seconds from one that makes
             // the same image in four minutes, and CanRun says yes to both.
-            Lanes = report?.Capabilities.Where(c => c.CanRun).ToDictionary(c => c.Kind, c => c.Lane),
-            Provisional = report?.Capabilities.Where(c => c.Provisional).Select(c => c.Kind).ToArray() ?? [],
+            Lanes = report is null ? null : offered.ToDictionary(c => c.Kind, c => c.Lane),
+            Provisional = report?.Capabilities.Where(c => c.Provisional && Offers(c.Kind)).Select(c => c.Kind).ToArray() ?? [],
             Host = MachineIdentity.MachineName(),
         };
     }
@@ -403,19 +758,35 @@ public sealed class NodeHost : IAsyncDisposable
 
     /// <summary>
     /// Exchanges a pairing code from the website for this machine's identity,
-    /// and writes it where an update cannot lose it.
+    /// writes it where an update cannot lose it, and starts sharing under it.
     /// </summary>
     /// <remarks>
-    /// The credentials are not applied to the running process: the relay
-    /// connection is built from <see cref="Options"/> at START, and rebuilding
-    /// the world underneath a node that might be mid-render is not worth the
-    /// complexity. The caller restarts, and comes back paired.
+    /// <para>
+    /// Applied in this process. It used to be applied by restarting, and the
+    /// restart raced itself: the new copy found the old one still holding the
+    /// single-instance lock, decided it was a duplicate and exited, and the
+    /// old one then shut down as planned — so a first-time owner watched the
+    /// program vanish at the moment pairing succeeded. Only the relay session
+    /// is built from the identity, and that is rebuilt here.
+    /// </para>
+    /// <para>
+    /// Refused while a customer's job is on this machine, before the code is
+    /// spent: the job belongs to the identity being replaced, and swapping it
+    /// out mid-render would leave that job with nobody to deliver it.
+    /// </para>
+    /// <para>
+    /// Pairing is the owner saying "share this machine", so the switch is
+    /// turned on and remembered.
+    /// </para>
     /// </remarks>
     public async Task<(bool Ok, string Message)> PairAsync(string pairingCode, CancellationToken ct = default)
     {
         string code = pairingCode.Trim();
         if (code.Length < 8)
             return (false, "รหัสจับคู่ต้องมี 8 ตัวอักษร");
+
+        if (Runtime.IsWorking)
+            return (false, "เครื่องกำลังทำงานของลูกค้าอยู่ — รอให้เสร็จก่อนแล้วค่อยลงทะเบียนใหม่ (รหัสยังไม่ถูกใช้)");
 
         Log.Info("[net] กำลังลงทะเบียนเครื่องกับ XMAN Studio");
 
@@ -439,10 +810,26 @@ public sealed class NodeHost : IAsyncDisposable
             return (false, $"ลงทะเบียนสำเร็จแต่บันทึกลงเครื่องไม่ได้: {ex.Message} — กรุณาขอรหัสใหม่");
         }
 
-        Remember(credentials.WorkerId, credentials.Token, credentials.RelayUrl ?? Options.RelayUrl);
+        string relay = string.IsNullOrWhiteSpace(credentials.RelayUrl) ? Options.RelayUrl : credentials.RelayUrl;
+        Remember(credentials.WorkerId, credentials.Token, relay);
 
         Log.Info($"[net] ลงทะเบียนเครื่องสำเร็จ — worker {credentials.WorkerId}"
                  + (credentials.Owner is null ? "" : $" ของ {credentials.Owner}"));
+
+        // A session under the old identity belongs to a worker that is being
+        // replaced — and one refused by the relay is exactly what re-pairing
+        // is for. Closed outright: nothing is in flight (checked above).
+        await StopAsync();
+        Options = Options with
+        {
+            WorkerId = credentials.WorkerId,
+            Token = credentials.Token,
+            RelayUrl = relay,
+            IdentityRescuedFrom = null,
+        };
+
+        RememberSharing(true);
+        await StartAsync();
 
         return (true, credentials.Message ?? "ลงทะเบียนเรียบร้อย");
     }
@@ -457,7 +844,13 @@ public sealed class NodeHost : IAsyncDisposable
         if (_assessing && report is null) return (null, "กำลังประเมินเครื่องครั้งแรก");
         if (report is null) return (null, "ยังไม่ได้ประเมินเครื่อง");
         if (report.Failed is not null) return (null, $"ประเมินเครื่องไม่ผ่าน: {report.Failed}");
-        if (!report.IsUsable(SelfUpdater.CurrentVersion, _hardwareHash.Value))
+
+        // The card torch reports now, against the one the report was measured
+        // on. Unknown (ComfyUI not answering) leaves the report alone.
+        string? gpuNow = Runtime.CurrentGpuHash;
+        if (report.GpuChanged(gpuNow))
+            return (null, "การ์ดจอไม่ใช่ตัวที่ประเมินไว้ — กำลังประเมินใหม่");
+        if (!report.IsUsable(SelfUpdater.CurrentVersion, _hardwareHash.Value, gpuNow))
             return (null, "ผลประเมินหมดอายุหรือฮาร์ดแวร์เปลี่ยน — กำลังประเมินใหม่");
 
         // Measured, and measured as not able to do anything we dispatch. Saying
@@ -490,23 +883,40 @@ public sealed class NodeHost : IAsyncDisposable
 
         while (!ct.IsCancellationRequested)
         {
+            // Which card is in the machine, asked of ComfyUI on every pass, so
+            // a swapped card is caught within one pass instead of when the
+            // report's month runs out. Cheap: one loopback call, no benchmark.
+            try { await Runtime.ReadGpuHashAsync(ct); } catch (OperationCanceledException) { return; }
+
             var (report, reason) = AssessmentForDispatch();
 
             // Never benchmark on top of a customer's render: it would steal the
             // card from work somebody is paying for, and mismeasure this machine.
-            if (report is null && !Runtime.IsBusy)
+            if (report is null && !Runtime.IsWorking)
             {
                 Log.Info($"[gpu] ต้องประเมินเครื่องก่อนรับงาน — {reason}");
                 await RunAssessmentAsync(ct);
             }
 
             // Re-check often while there is no usable report (a node in this
-            // state earns nothing), and lazily once there is one.
+            // state earns nothing). With one, the pass only looks at the card
+            // and the report's age; a benchmark runs only when those say so.
             TimeSpan wait = AssessmentForDispatch().Report is null
                 ? TimeSpan.FromMinutes(3)
-                : TimeSpan.FromHours(6);
+                : TimeSpan.FromMinutes(15);
             try { await Task.Delay(wait, ct); } catch (OperationCanceledException) { return; }
         }
+    }
+
+    /// <summary>
+    /// Puts a report in place as the assessment loop would on loading one.
+    /// For tests, which never start the loops.
+    /// </summary>
+    internal void UseAssessment(AssessmentReport report)
+    {
+        Assessment = report;
+        State.SetAssessment(report);
+        Reevaluate();
     }
 
     /// <summary>Measures this machine. Safe to call from the UI — only one runs at a time.</summary>
@@ -633,14 +1043,170 @@ public sealed class NodeHost : IAsyncDisposable
             try { await Task.Delay(TimeSpan.FromSeconds(20), ct); }
             catch (OperationCanceledException) { return; }
 
-            foreach (string promptId in Store.UnsettledJobs(TimeSpan.FromSeconds(15)))
+            try
             {
-                var (done, success, filename, error) = await Runtime.QueryHistoryAsync(promptId, ct);
-                if (!done) continue;
-
-                Store.JobFinished(promptId, success, filename, error);
-                Log.Info($"[job] reconciled {Short(promptId)} from history: {(success ? "completed" : "failed")}");
+                await ReconcileOnceAsync(ct);
             }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                // One bad pass is not a reason to stop reconciling for the
+                // rest of the process's life.
+                Log.Warn($"[warn] ledger reconcile failed this pass: {ex.Message}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// One pass: every job the ledger holds open, a page at a time, plus every
+    /// prompt the runtime is still tracking, held against ComfyUI's queue and
+    /// history.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// It used to take the twenty oldest open rows and skip any that history
+    /// did not have. A row ComfyUI had lost stayed at the front for ever, and
+    /// every job behind the twentieth such row was never reconciled.
+    /// </para>
+    /// <para>
+    /// Settling goes through <see cref="JobHistory.Finished"/> and the runtime,
+    /// not straight to the database: the Dashboard's current job and the
+    /// runtime's busy flag are cleared by the same pass that fixes the row,
+    /// instead of showing a phantom render until the next restart.
+    /// </para>
+    /// </remarks>
+    internal async Task ReconcileOnceAsync(CancellationToken ct)
+    {
+        // The queue first, then what the runtime tracks: a prompt accepted in
+        // between is then "tracked but not in the queue" for one pass, which
+        // takes two passes to count as lost.
+        QueueSnapshot? queue = await Runtime.ReadQueueAsync(ct);
+        var tracked = new HashSet<string>(Runtime.TrackedPrompts(), StringComparer.Ordinal);
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        Storage.NodeStore.OpenJob? after = null;
+        for (int page = 0; page < 10; page++)
+        {
+            IReadOnlyList<Storage.NodeStore.OpenJob> rows = Store.UnsettledPage(TimeSpan.FromSeconds(15), limit: 50, after);
+            foreach (var row in rows)
+            {
+                seen.Add(row.PromptId);
+                await SettleOneAsync(row.PromptId, row.SubmittedAt, queue, tracked.Contains(row.PromptId), ct);
+            }
+            if (rows.Count < 50) break;
+            after = rows[^1];
+        }
+
+        foreach (string promptId in tracked.Where(id => !seen.Contains(id)))
+            await SettleOneAsync(promptId, submittedAt: null, queue, tracked: true, ct);
+    }
+
+    /// <summary>
+    /// Settles one open job from ComfyUI's history, or writes it off when
+    /// ComfyUI has neither queued nor finished it.
+    /// </summary>
+    /// <remarks>
+    /// A prompt the runtime is still tracking is written off after two passes
+    /// in a row find it nowhere — that is a ComfyUI that died mid-render, and
+    /// the flag it left set would otherwise block re-assessment and updates
+    /// for good. A row known only to the ledger waits <see cref="LostAfter"/>.
+    /// Nothing is written off while ComfyUI cannot be asked: silence is not an
+    /// answer.
+    /// </remarks>
+    private async Task SettleOneAsync(string promptId, DateTimeOffset? submittedAt, QueueSnapshot? queue, bool tracked, CancellationToken ct)
+    {
+        HistoryEntry entry = await Runtime.HistoryAsync(promptId, ct);
+        if (entry.State == HistoryState.Done)
+        {
+            Finish(promptId, entry.Success, entry.Filename, entry.Error);
+            Log.Info($"[job] reconciled {Short(promptId)} from history: {(entry.Success ? "completed" : "failed")}");
+            return;
+        }
+
+        if (entry.State != HistoryState.Absent || queue is null) return;
+
+        if (queue.PromptIds.Contains(promptId))
+        {
+            Runtime.NoteFound(promptId);
+            return;
+        }
+
+        bool lost = tracked
+            ? Runtime.NoteMissing(promptId) >= 2
+            : submittedAt is { } at && DateTimeOffset.Now - at > LostAfter;
+        if (!lost) return;
+
+        Finish(promptId, false, null, "หายจากคิวและประวัติของ ComfyUI — ComfyUI น่าจะถูกปิดหรือรีสตาร์ตระหว่างงาน");
+        Log.Warn($"[job] {Short(promptId)} หายจาก ComfyUI — บันทึกเป็นงานล้มเหลว");
+    }
+
+    private void Finish(string promptId, bool success, string? filename, string? error)
+    {
+        Runtime.Settle(promptId, success);
+        Jobs.Finished(promptId, success, filename, error);
+        State.SetCurrentJob(Jobs.Current);
+    }
+
+    /// <summary>
+    /// Takes finished customer jobs off this machine when aixman has not asked
+    /// to within <see cref="NodeOptions.PurgeAfterHours"/>, and deletes
+    /// uploads no prompt ever used.
+    /// </summary>
+    /// <remarks>
+    /// Only jobs that finished after this build first ran: the history an
+    /// owner already had is not swept away on the day of the update.
+    /// </remarks>
+    private async Task PurgeLoopAsync(CancellationToken ct)
+    {
+        if (Options.PurgeAfterHours <= 0) return;
+        TimeSpan after = TimeSpan.FromHours(Options.PurgeAfterHours);
+        DateTimeOffset since = PurgeSince();
+
+        try { await Task.Delay(TimeSpan.FromMinutes(2), ct); } catch (OperationCanceledException) { return; }
+
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                foreach (string promptId in Store.JobsToPurge(DateTimeOffset.UtcNow - after, since))
+                {
+                    PurgeResult result = await Runtime.PurgeAsync(promptId, ct);
+                    // ComfyUI is down: every other row would fail the same way.
+                    if (result.Unreachable) break;
+                }
+                await Runtime.SweepUnclaimedUploadsAsync(after, ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                Log.Warn($"[warn] purge pass failed: {ex.Message}");
+            }
+
+            try { await Task.Delay(TimeSpan.FromMinutes(10), ct); } catch (OperationCanceledException) { return; }
+        }
+    }
+
+    private DateTimeOffset PurgeSince()
+    {
+        try
+        {
+            if (Store.GetSetting(PurgeSinceKey) is { } kept && long.TryParse(kept, out long ms))
+                return DateTimeOffset.FromUnixTimeMilliseconds(ms);
+
+            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            Store.SetSetting(PurgeSinceKey, now.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            return DateTimeOffset.FromUnixTimeMilliseconds(now);
+        }
+        catch
+        {
+            // Unreadable means "from now": never further back than that.
+            return DateTimeOffset.UtcNow;
         }
     }
 
@@ -671,11 +1237,6 @@ public sealed class NodeHost : IAsyncDisposable
         // earns on the free tier, and a website outage must not idle the fleet.
         try { await Task.Delay(TimeSpan.FromSeconds(3), ct); } catch (OperationCanceledException) { return; }
 
-        var registration = await _studio.RegisterDeviceAsync(SelfUpdater.CurrentVersion, ct);
-        Log.Info(registration.Ok
-            ? "[net] registered with XMAN Studio"
-            : $"[net] could not register with XMAN Studio: {registration.Message}");
-
         while (!ct.IsCancellationRequested)
         {
             LicenseState license = await _studio.ValidateAsync(Options.LicenseKey, ct);
@@ -690,6 +1251,40 @@ public sealed class NodeHost : IAsyncDisposable
 
             try { await Task.Delay(TimeSpan.FromMinutes(30), ct); }
             catch (OperationCanceledException) { return; }
+        }
+    }
+
+    /// <summary>
+    /// Registers this machine in XMAN Studio's device list, and keeps trying
+    /// until it has.
+    /// </summary>
+    /// <remarks>
+    /// It used to try once per launch. A node started while the website was
+    /// down or the network was not up yet — at login, most mornings — was then
+    /// missing from the registry until its next restart, which on a machine
+    /// that never goes down is never.
+    /// </remarks>
+    private async Task RegisterDeviceLoopAsync(CancellationToken ct)
+    {
+        try { await Task.Delay(TimeSpan.FromSeconds(3), ct); } catch (OperationCanceledException) { return; }
+
+        TimeSpan wait = TimeSpan.FromMinutes(1);
+        for (int attempt = 1; !ct.IsCancellationRequested; attempt++)
+        {
+            var registration = await _studio.RegisterDeviceAsync(SelfUpdater.CurrentVersion, ct);
+            if (registration.Ok)
+            {
+                Log.Info("[net] registered with XMAN Studio");
+                return;
+            }
+
+            // Said on the first failure and then now and again, not on every
+            // retry: an outage is one fact, not thirty lines.
+            if (attempt == 1 || attempt % 6 == 0)
+                Log.Info($"[net] could not register with XMAN Studio: {registration.Message} — จะลองใหม่อัตโนมัติ");
+
+            try { await Task.Delay(wait, ct); } catch (OperationCanceledException) { return; }
+            wait = TimeSpan.FromTicks(Math.Min(wait.Ticks * 2, TimeSpan.FromMinutes(30).Ticks));
         }
     }
 
@@ -739,15 +1334,17 @@ public sealed class NodeHost : IAsyncDisposable
                     return;
 
                 case UpdateOutcome.Downloaded:
-                    State.SetUpdateStatus($"อัปเดต {check.AvailableVersion} พร้อมติดตั้ง — รอให้งานปัจจุบันเสร็จ");
-                    Log.Info($"[cfg] update {check.AvailableVersion} downloaded — waiting for the node to go idle");
+                    State.SetUpdateStatus($"อัปเดต {check.AvailableVersion} พร้อมติดตั้ง — รอส่งงานปัจจุบันให้เสร็จ");
+                    Log.Info($"[cfg] update {check.AvailableVersion} downloaded — handing over work before installing");
 
-                    while (Runtime.IsBusy && !ct.IsCancellationRequested)
+                    try
                     {
-                        try { await Task.Delay(TimeSpan.FromSeconds(15), ct); }
-                        catch (OperationCanceledException) { return; }
+                        await HandOverForUpdateAsync(ct);
                     }
-                    if (ct.IsCancellationRequested) return;
+                    catch (OperationCanceledException)
+                    {
+                        return;
+                    }
 
                     UpdatePending = true;
                     State.SetUpdateStatus($"กำลังติดตั้ง {check.AvailableVersion}");
@@ -770,14 +1367,56 @@ public sealed class NodeHost : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Waits until installing an update would cost nobody anything: no
+    /// customer render in flight, and the last one collected.
+    /// </summary>
+    /// <remarks>
+    /// A sharing node drains first — it stops taking work so that it actually
+    /// becomes idle, where it used to wait for an idle moment that a steadily
+    /// busy node might never have. The drain does not touch the owner's switch,
+    /// so the new build resumes sharing on its own. An owner who presses START
+    /// during it wins; the update waits for a quieter time.
+    /// </remarks>
+    private async Task HandOverForUpdateAsync(CancellationToken ct)
+    {
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            bool sharing;
+            lock (_sessionGate) sharing = _sessionCts is not null;
+
+            if (sharing)
+            {
+                await DrainAsync("กำลังจะติดตั้งอัปเดต — ทำงานที่รับไว้ให้เสร็จก่อน แล้วจะกลับมาแชร์เอง").WaitAsync(ct);
+
+                lock (_sessionGate) sharing = _sessionCts is not null;
+                if (!sharing) return;
+
+                Log.Info("[cfg] เลื่อนการติดตั้งอัปเดต — เจ้าของกดแชร์ต่อระหว่างรอ จะลองใหม่ในอีก 30 นาที");
+                await Task.Delay(TimeSpan.FromMinutes(30), ct);
+                continue;
+            }
+
+            if (!Runtime.IsWorking) return;
+            await Task.Delay(TimeSpan.FromSeconds(15), ct);
+        }
+    }
+
     /// <summary>An update is staged and the node is idle. The host should shut down and call <see cref="ApplyPendingUpdate"/>.</summary>
     public event Action? UpdateReady;
 
     /// <summary>Call after <see cref="DisposeAsync"/>, never before: the runtime and socket must be gone first.</summary>
-    public void ApplyPendingUpdate()
+    /// <param name="restartArgs">
+    /// What the new build starts with — see <see cref="LaunchFlags.ForRestart"/>.
+    /// Whether it shares again is not decided here but by the owner's
+    /// remembered switch, the same as any other launch.
+    /// </param>
+    public void ApplyPendingUpdate(string[]? restartArgs = null)
     {
         if (!UpdatePending) return;
-        Updater.ApplyAndRestart();   // does not return when it succeeds
+        Updater.ApplyAndRestart(restartArgs);   // does not return when it succeeds
         Log.Warn("[cfg] update could not be applied — continuing on the current build");
     }
 
@@ -789,20 +1428,29 @@ public sealed class NodeHost : IAsyncDisposable
         {
             case JobStatus.Queued:
                 Jobs.Submitted(e.PromptId, e.NodesTotal, e.Kind);
+                if (e.Inputs.Count > 0)
+                {
+                    // Kept in the ledger, so a purge after a restart still
+                    // knows which uploads were this customer's.
+                    try { Store.JobInputs(e.PromptId, e.Inputs); }
+                    catch (Exception ex) { Log.Warn($"[warn] could not record the job's inputs: {ex.Message}"); }
+                }
                 Log.Info($"[job] received {(e.Kind == "job" ? "job" : e.Kind + " job")} {Short(e.PromptId)} ({e.NodesTotal} nodes)");
                 break;
+            // A replayed event was said in the log when it happened; only the
+            // record was missing. See ComfyRuntime.JobEvent.Replayed.
             case JobStatus.Running:
                 Jobs.Started(e.PromptId);
-                Log.Info($"[job] rendering {Short(e.PromptId)}");
+                if (!e.Replayed) Log.Info($"[job] rendering {Short(e.PromptId)}");
                 break;
             case JobStatus.Completed:
                 Jobs.Finished(e.PromptId, true, e.Filename, null);
-                Log.Info($"[job] completed {Short(e.PromptId)}{(e.Filename is null ? "" : $" → {e.Filename}")}");
+                if (!e.Replayed) Log.Info($"[job] completed {Short(e.PromptId)}{(e.Filename is null ? "" : $" → {e.Filename}")}");
                 Retune();
                 break;
             case JobStatus.Failed:
                 Jobs.Finished(e.PromptId, false, null, e.Error);
-                Log.Warn($"[job] failed {Short(e.PromptId)}: {e.Error}");
+                if (!e.Replayed) Log.Warn($"[job] failed {Short(e.PromptId)}: {e.Error}");
                 break;
         }
         State.SetCurrentJob(Jobs.Current);
