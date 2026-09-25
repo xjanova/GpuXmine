@@ -339,23 +339,47 @@ public sealed partial class ComfyRuntime
         lock (_stateGate) _queueRemaining = count;
     }
 
+    /// <summary>ComfyUI's queue, by whose work it is.</summary>
+    /// <param name="Owners">The owner's own prompts: everything that did not come down the tunnel.</param>
+    /// <param name="Earlier">
+    /// Customer prompts this process never accepted, which the ledger says
+    /// came down the tunnel — a render that was running when the node restarted.
+    /// </param>
+    private readonly record struct QueueShare(int Owners, int Earlier);
+
     /// <summary>
-    /// How much of the queue is the owner's own work: everything except the
-    /// customer prompts this node accepted.
+    /// How much of the queue is the owner's own work, and how much is a
+    /// customer's this process does not track.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// ComfyUI sends a prompt's success event a moment before it takes the
     /// prompt off its running list. Counting that finished customer render as
     /// the owner's would refuse the next job for work that is already done —
     /// and the prompts still open are refused for separately, as ours.
+    /// </para>
+    /// <para>
+    /// The set this process accepted is in memory only. A node restarted in
+    /// the middle of a render used to find that render in the queue, know
+    /// nothing of it, and tell aixman the owner had a backlog — while the
+    /// ledger had the prompt on record as a customer's all along, as
+    /// <see cref="IsTunnelPrompt"/> already knew. Those are counted apart, so
+    /// the refusal names the job that really has the card.
+    /// </para>
     /// </remarks>
-    private int OwnersQueued(QueueSnapshot queue)
+    private QueueShare ShareOf(QueueSnapshot queue)
     {
+        int ours;
+        List<string> unknown;
         lock (_stateGate)
         {
-            int ours = queue.PromptIds.Count(_known.Contains);
-            return Math.Max(0, queue.Count - ours);
+            ours = queue.PromptIds.Count(_known.Contains);
+            unknown = queue.PromptIds.Where(id => !_known.Contains(id)).ToList();
         }
+
+        // Unreadable ledger: 0, and the prompts are the owner's, as before it was asked.
+        int earlier = unknown.Count == 0 ? 0 : FromLedger(l => l.JobsAmong(unknown).Count);
+        return new QueueShare(Math.Max(0, queue.Count - ours - earlier), earlier);
     }
 
     /// <summary>Keeps <see cref="QueueRemaining"/> fresh for the heartbeat, which cannot wait on a network call.</summary>

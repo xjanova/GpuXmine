@@ -628,6 +628,40 @@ public class ComfyRuntimeTests
     }
 
     [Fact]
+    public async Task A_customer_render_from_before_a_restart_is_named_as_the_customers_not_the_owners_queue()
+    {
+        using var dir = new TempDir();
+        await using var comfy = await FakeComfy.StartAsync();
+        using var store = new Storage.NodeStore(Path.Combine(dir.Path, "node.db"));
+        // The last run took it and was restarted while ComfyUI rendered it:
+        // on the ledger, in ComfyUI's queue, and in nothing this process holds.
+        store.JobSubmitted("from-last-run", "image", 4, freeShare: false);
+        comfy.Queue["from-last-run"] = true;
+        await using var runtime = Runtime(comfy);
+        runtime.Ledger = store;
+
+        LocalReply ready = await Send(runtime, "GET", "/aixman/ready");
+        LocalReply prompt = await Send(runtime, "POST", "/prompt", Http.ImagePrompt());
+
+        Assert.Equal(503, ready.Status);
+        Assert.Equal(ReadyStage.Busy, Http.Body(ready)["stage"]!.GetValue<string>());
+        Assert.Contains("ลูกค้า", Http.Body(ready)["reason"]!.GetValue<string>());
+        Assert.DoesNotContain("งานค้าง", Http.Body(ready)["reason"]!.GetValue<string>());
+        Assert.Equal(409, prompt.Status);
+        Assert.Equal(ReadyStage.Busy, Http.Body(prompt)["stage"]!.GetValue<string>());
+        Assert.False(comfy.Reached("POST /prompt"));
+
+        // The owner's batch behind it is still the owner's, counted once the
+        // customer's render has left the queue.
+        comfy.Queue["owners-batch"] = true;
+        Assert.Contains("ลูกค้า", Http.Body(await Send(runtime, "GET", "/aixman/ready"))["reason"]!.GetValue<string>());
+        comfy.Queue.TryRemove("from-last-run", out _);
+        LocalReply owners = await Send(runtime, "GET", "/aixman/ready");
+        Assert.Equal(ReadyStage.Busy, Http.Body(owners)["stage"]!.GetValue<string>());
+        Assert.Contains("งานค้างในคิว 1 งาน", Http.Body(owners)["reason"]!.GetValue<string>());
+    }
+
+    [Fact]
     public async Task A_render_still_executing_keeps_the_node_busy()
     {
         await using var comfy = await FakeComfy.StartAsync();

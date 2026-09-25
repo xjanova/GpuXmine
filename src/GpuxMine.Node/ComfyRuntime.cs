@@ -370,10 +370,7 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
         // executing counts even when nothing tracks it as a customer's any
         // more — the card is taken either way.
         if (HasTunnelWork || IsBusy)
-        {
-            return (Refusal(submitting ? 409 : 503, ReadyStage.Busy,
-                "เครื่องกำลังทำงานของลูกค้าอยู่ — รับงานถัดไปเมื่อเสร็จ"), report);
-        }
+            return (Refusal(submitting ? 409 : 503, ReadyStage.Busy, CustomerRendering), report);
 
         // ComfyUI that cannot say what it is doing cannot take a job either.
         // Answered here, as a stage, for all three: a submission let through
@@ -385,21 +382,30 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
         if (queue is null)
             return (Refusal(503, ReadyStage.Paused, ComfyNotAnswering), report);
 
+        // A customer's render from before the node restarted: nothing above
+        // tracks it, and it is not the owner's either — see ShareOf.
+        QueueShare share = ShareOf(queue);
+        if (share.Earlier > 0)
+            return (Refusal(submitting ? 409 : 503, ReadyStage.Busy, CustomerRendering), report);
+
         // The owner's own work counts too. Their batch is theirs to run, and a
         // customer's job queued behind it would wait out its whole timeout.
-        if (OwnersQueued(queue) is > 0 and var owners)
+        if (share.Owners > 0)
         {
             return (LocalReply.Json(503, new
             {
                 ready = false,
                 stage = ReadyStage.Busy,
-                reason = $"ComfyUI ในเครื่องมีงานค้างในคิว {owners} งาน",
+                reason = $"ComfyUI ในเครื่องมีงานค้างในคิว {share.Owners} งาน",
                 queue_remaining = queue.Count,
             }), report);
         }
 
         return (null, report);
     }
+
+    /// <summary>What a node says while a customer's render has the card.</summary>
+    private const string CustomerRendering = "เครื่องกำลังทำงานของลูกค้าอยู่ — รับงานถัดไปเมื่อเสร็จ";
 
     private static LocalReply Refusal(int status, string stage, string? reason) =>
         LocalReply.Json(status, new { ready = false, stage, reason });
@@ -438,7 +444,7 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
         lock (_stateGate)
         {
             if (_submitting > 0 || _tunnelPrompts.Count > 0)
-                return Refusal(409, ReadyStage.Busy, "เครื่องกำลังทำงานของลูกค้าอยู่ — รับงานถัดไปเมื่อเสร็จ");
+                return Refusal(409, ReadyStage.Busy, CustomerRendering);
             _submitting++;
         }
 

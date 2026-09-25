@@ -168,6 +168,22 @@ public class SupportTests
     }
 
     [Fact]
+    public void The_ledger_picks_its_own_jobs_out_of_a_long_queue()
+    {
+        using var dir = new TempDir();
+        using var store = new NodeStore(Path.Combine(dir.Path, "node.db"));
+        store.JobSubmitted("customer-1", "image", 1, false);
+        store.JobSubmitted("customer-2", "image", 1, false);
+
+        // More ids than one query takes, most of them the owner's.
+        var queue = Enumerable.Range(0, 1200).Select(i => $"owners-{i}").Append("customer-2").Append("customer-1").ToArray();
+
+        Assert.Equal(new[] { "customer-1", "customer-2" }, store.JobsAmong(queue).Order().ToArray());
+        Assert.Empty(store.JobsAmong([]));
+        Assert.Empty(store.JobsAmong(["owners-only"]));
+    }
+
+    [Fact]
     public void A_ledger_from_an_earlier_build_gains_the_new_columns()
     {
         using var dir = new TempDir();

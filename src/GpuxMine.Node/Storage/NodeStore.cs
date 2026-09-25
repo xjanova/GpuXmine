@@ -539,6 +539,37 @@ public sealed class NodeStore : IDisposable
         return command.ExecuteScalar() is not null;
     }
 
+    /// <summary>
+    /// Which of <paramref name="promptIds"/> came down the tunnel — the
+    /// ledger's half of <see cref="HasJob"/>, for a whole queue at once.
+    /// </summary>
+    /// <remarks>
+    /// One query per few hundred ids rather than one per id: it is asked on
+    /// every readiness probe, and the owner's own batch can be long.
+    /// </remarks>
+    public IReadOnlySet<string> JobsAmong(IReadOnlyCollection<string> promptIds)
+    {
+        var found = new HashSet<string>(StringComparer.Ordinal);
+        if (promptIds.Count == 0) return found;
+
+        using var connection = Open();
+        foreach (string[] chunk in promptIds.Chunk(500))
+        {
+            using var command = connection.CreateCommand();
+            var names = new string[chunk.Length];
+            for (int i = 0; i < chunk.Length; i++)
+            {
+                names[i] = "$p" + i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                command.Parameters.AddWithValue(names[i], chunk[i]);
+            }
+            command.CommandText = $"SELECT prompt_id FROM jobs WHERE prompt_id IN ({string.Join(',', names)})";
+
+            using var reader = command.ExecuteReader();
+            while (reader.Read()) found.Add(reader.GetString(0));
+        }
+        return found;
+    }
+
     /// <summary>When a job was recorded as submitted, or null when the ledger does not hold it.</summary>
     public DateTimeOffset? JobSubmittedAt(string promptId)
     {
