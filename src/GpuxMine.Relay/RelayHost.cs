@@ -235,7 +235,11 @@ public static class RelayHost
         // Both tokens by default, which cuts off anyone holding either old one —
         // including the node itself, until it is paired again. `?only=tunnel`
         // re-issues aixman's alone and leaves the node connected: the way a worker
-        // enrolled before the split gets a tunnel token of its own.
+        // enrolled before the split gets a tunnel token of its own. The old one
+        // stops opening /w/ with this answer, and nothing here hands the new one
+        // on — the caller must store it and give it to aixman in the same step,
+        // as xmanstudio's `gpuxmine:rotate-tunnel-tokens` does. A call made by
+        // hand leaves aixman with a refused token and the worker with no work.
         app.MapPost("/admin/workers/{workerId}/rotate", async (HttpRequest request, string workerId, WorkerStore store, AgentRegistry registry) =>
         {
             if (!IsAdmin(request, options)) return Results.Unauthorized();

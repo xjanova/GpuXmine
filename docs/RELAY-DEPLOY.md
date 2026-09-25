@@ -186,9 +186,13 @@ worker ที่มี tunnel token แล้ว **token ของเครื�
 1. deploy relay รุ่นนี้ (ก่อนหรือหลังรีโปอื่นก็ได้ ไม่มีอะไรพัง)
 2. deploy xmanstudio รุ่นที่เก็บ `tunnel_token` และส่ง `tunnel_token ?? relay_token` ให้ aixman
 3. เปิด: เพิ่ม `Relay__IssueTunnelTokens=true` ใน `/etc/gpuxmine-relay.env` แล้ว `systemctl restart gpuxmine-relay`
-4. ย้าย worker เก่าทีละตัวโดยไม่ต้องให้เจ้าของจับคู่ใหม่: `POST /admin/workers/{id}/rotate?only=tunnel`
-   ออก tunnel token ใหม่ให้อย่างเดียว เครื่องยังต่ออยู่ตามเดิม — xmanstudio ต้องเก็บค่าที่ได้และส่งให้ aixman ทันที
-   (ระหว่างนั้น aixman จะได้ 401 จาก token เก่า)
+4. ให้ worker ที่จับคู่ก่อนแยกมี tunnel token ของตัวเอง โดยเจ้าของไม่ต้องจับคู่ใหม่ — **บนเครื่องเว็บ** รัน
+   `php artisan gpuxmine:rotate-tunnel-tokens --dry-run` ดูรายการก่อน แล้วรัน `php artisan gpuxmine:rotate-tunnel-tokens`
+   ซ้ำจนไม่เหลือเครื่องค้าง คำสั่งนี้ขอใบใหม่จาก relay (`rotate?only=tunnel` เครื่องยังต่ออยู่ตามเดิม) เก็บลง
+   `gpu_nodes.tunnel_token` และส่งให้ aixman ในขั้นเดียว ข้ามเครื่องที่กำลังเรนเดอร์งานลูกค้า (`--include-busy` ถ้าจะทำด้วย)
+   **ห้ามยิง `POST /admin/workers/{id}/rotate?only=tunnel` เอง** — ตั้งแต่วินาทีที่ relay ตอบ ใบเดิมเปิด `/w/` ไม่ได้อีก
+   ไม่มีใครเก็บใบใหม่ไว้ aixman จึงได้ 401 แล้วปิดแถวเป็น `terminated` พร้อมจำ token ที่ถูกปฏิเสธ เครื่องนั้นไม่ได้งานอีก
+   จนกว่าจะรันคำสั่งข้างบน (`php artisan gpuxmine:doctor` ขึ้น FAIL "กุญแจอุโมงค์" นับเป็นเครื่องที่ lost)
 
 ## คำสั่งจัดการ worker
 
@@ -201,7 +205,7 @@ worker ที่มี tunnel token แล้ว **token ของเครื�
 | `POST /admin/workers/{id}/disable?reason=` | ตัดทั้งสองทาง socket ที่ต่ออยู่ถูกปิดทันที เครื่องได้ **403** (ไม่ใช่ 401) เมื่อต่อใหม่ ประวัติยังอยู่ |
 | `POST /admin/workers/{id}/enable` | กลับมาใช้ได้ด้วย token เดิม |
 | `POST /admin/workers/{id}/rotate` | ออก token ใหม่ทั้งสองใบ ใบเก่าใช้ไม่ได้ทันที socket ถูกปิด — เครื่องต้องจับคู่ใหม่ |
-| `POST /admin/workers/{id}/rotate?only=tunnel` | ออกเฉพาะ tunnel token เครื่องไม่หลุด (`token` ในคำตอบเป็น `null`) |
+| `POST /admin/workers/{id}/rotate?only=tunnel` | ออกเฉพาะ tunnel token เครื่องไม่หลุด (`token` ในคำตอบเป็น `null`) · **อย่าเรียกเอง** ใบเดิมใช้กับ `/w/` ไม่ได้ทันทีที่ตอบ และ aixman ไม่มีใบใหม่ — ใช้ `php artisan gpuxmine:rotate-tunnel-tokens` บนเครื่องเว็บ ซึ่งเก็บและส่งให้ aixman ในขั้นเดียว (ขั้นที่ 4 ข้างบน) |
 | `DELETE /admin/workers/{id}` | ลบถาวร socket ถูกปิด · เรียกซ้ำได้ ตอบ 200 `{deleted:true, existed:false}` ถ้าไม่มีอยู่แล้ว |
 
 worker ที่ไม่รู้จัก: disable / enable / rotate ตอบ 404 `{error:"unknown-worker"}`
@@ -238,6 +242,9 @@ ComfyUI-Manager (ติดตั้ง custom node = รันโค้ดบน
   ComfyUI ในเครื่องไม่ตอบ — `reason` บอกว่าอันไหน) · `unassessed` · `busy` · `draining` (กด STOP หรือกำลังจับคู่ใหม่)
   — ทุกค่าแปลว่า "ยังไม่ใช่ตอนนี้ ถามใหม่" ไม่ใช่ "เครื่องเสีย"
   ComfyUI ที่ปิดอยู่เคยทำให้ `POST /prompt` ได้ 502 เปล่า ๆ ซึ่ง aixman นับเป็นเครื่องทำงานล้ม — ตอนนี้ได้ 503 `paused` เหมือน probe
+  `GET /object_info[/{cls}]` ก็เช่นกัน: aixman ถามมันเป็นคำขอแรกของการส่งงานทุกครั้งที่ schema ในแคชเกิน 10 นาที
+  ComfyUI ไม่ตอบจึงได้ 503 `{ready:false, stage:"paused"}` ไม่ใช่ 502 (ส่วนเครื่องที่พักด้วยเหตุอื่นยังตอบรายการ node ตามปกติ
+  เพราะรายการไม่ได้รับงาน `POST /prompt` ที่ตามมาคือตัวที่ถูกปฏิเสธ)
 - **เห็นแค่งานที่มาทางอุโมงค์** — `GET /history` ทั้งรายการได้ 403 · `GET /history/{id}` ของ prompt ที่ไม่ได้มาทางอุโมงค์ได้ `{}`
   เหมือน id ที่ ComfyUI ไม่รู้จัก · `GET /queue` เหลือแค่แถวของงานลูกค้า · `GET /view` ได้เฉพาะไฟล์ที่ history ของงานลูกค้าระบุ
   (ไฟล์อื่นได้ 404) · `POST /history {delete}` ลบได้เฉพาะ id ของงานลูกค้า · `POST /interrupt` หยุดได้เฉพาะงานลูกค้าที่กำลัง
@@ -408,7 +415,10 @@ relay (เครื่อง TPIX)
 - [ ] R1 รุ่นที่รันส่ง `busy` `accepting` และ `telemetry.lanes` ออกมาใน `GET /admin/workers` — relay รุ่นที่ไม่ส่งต่อ
       telemetry ที่ไม่รู้จักทำให้ `lanes` หายระหว่างทาง xmanstudio จึงส่งต่อให้ aixman ไม่ได้
 - [ ] R2 `/etc/gpuxmine-relay.env` มี `GPUXMINE_ADMIN_KEY` และ `GPUXMINE_OBSERVER_KEY` · `curl https://relay.xman4289.com:8443/healthz` ได้ 200
-- [ ] R3 (หลัง xmanstudio รุ่นที่เก็บ `tunnel_token` ขึ้นแล้วเท่านั้น) `Relay__IssueTunnelTokens=true` แล้วย้าย worker เก่าด้วย `rotate?only=tunnel`
+- [ ] R3 (หลัง xmanstudio รุ่นที่เก็บ `tunnel_token` ขึ้นแล้วเท่านั้น) ตั้ง `Relay__IssueTunnelTokens=true` แล้ว restart relay
+      จากนั้นบนเครื่องเว็บรัน `php artisan gpuxmine:rotate-tunnel-tokens --dry-run` ตามด้วย
+      `php artisan gpuxmine:rotate-tunnel-tokens` ซ้ำจนไม่เหลือเครื่องค้าง — **ห้ามยิง `rotate?only=tunnel` เอง**
+      (เหตุผลอยู่ในขั้นที่ 4 ของ "token สองใบ")
 
 xmanstudio (เครื่องเว็บ)
 - [ ] X1 `.env`: `GPUXMINE_RELAY_URL` (https และมี `:8443`) · `GPUXMINE_RELAY_ADMIN_KEY` · URL ของ aixman และ
@@ -416,7 +426,9 @@ xmanstudio (เครื่องเว็บ)
       `GPUXMINE_RESYNC_MINUTES` (10) — แล้ว `php artisan config:cache`
 - [ ] X2 migration ของ GPUxMINE รันครบ — `php artisan migrate:status` ต้องไม่มีตัวไหน Pending ใน `2026_09_19_000001` `2026_09_19_000002`
       และ `2026_09_25_100000` ถึง `2026_09_25_300000`
-      — ไม่มีตารางหรือคอลัมน์ของรายได้ = aixman เขียนรายได้ไม่ได้ (มันลองซ้ำเองกับงานย้อนหลัง 7 วัน งานที่เก่ากว่านั้นต้องเติมเอง)
+      — ไม่มีตารางหรือคอลัมน์ของรายได้ = aixman เขียนรายได้ไม่ได้ (aixman เขียนย้อนหลังให้เองภายใน
+      `GPUXMINE_EARNINGS_SWEEP_DAYS` วัน ค่าเริ่มต้น 30 และแจ้งเตือนวิกฤต `gpux-earning-expiring` 24 ชม. ก่อนงานหลุดรอบ
+      งานที่หลุดรอบไปแล้วต้องเติมเอง)
 - [ ] X3 crontab ของ DirectAdmin เป็น `* * * * *` เรียก `schedule:run` (ไม่ใช่ `*/5`) — การ sync เครื่องไป aixman
       และการตัดยอดรายได้รายชั่วโมงขึ้นกับตัวนี้
 - [ ] X4 `php artisan gpuxmine:doctor` ผ่าน (exit 0; ใส่ `--strict` ให้นับคำเตือนด้วย): env ครบ relay ตอบ aixman รับ secret
@@ -428,6 +440,8 @@ aixman
 - [ ] A2 `GPUXMINE_RELAY_URL` ตรงกับของ xmanstudio (ดูข้อ 5 ข้างบน)
 - [ ] A3 `R2_*` ครบ — ไม่มี = ออเดอร์ที่ใช้ GPU ถูกปฏิเสธทุกออเดอร์
 - [ ] A4 migration SQL ของ aixman รันแล้ว (CI รันให้ถ้า deploy ผ่าน CI; ถ้า deploy มือต้องรันเองก่อน `pm2 restart`)
+      · ตัวเลือกใน `.env`: `GPUXMINE_EARNINGS_SWEEP_DAYS` (30, ตั้งได้ 1–90) = aixman ลองเขียนรายได้ที่ค้างย้อนหลังกี่วัน
+      ถ้า xmanstudio จะรัน migration ช้ากว่า aixman นานกว่านั้น ให้ขยายไว้ก่อน
 - [ ] A5 provider SimplePod ยัง active — โมเดลของเครื่องชุมชนผูกอยู่กับแถว provider นั้น
 - [ ] A6 `sdxl-community` ออกจากสถานะ `tuning` แล้ว: รัน sync แคตตาล็อก แล้วสั่งเรนเดอร์ทดสอบจากหลังบ้านให้ผ่าน
       หนึ่งครั้ง (ต้องมีเครื่องชุมชนออนไลน์อย่างน้อยหนึ่งเครื่อง) — ก่อนนั้นลูกค้าสั่งโมเดลนี้ไม่ได้
@@ -464,7 +478,8 @@ aixman
 (หน้าเครื่องของฉันและ Dashboard บอกว่า "ยังไม่มีงานที่ตรงกับเครื่องนี้")
 
 **token สองใบยังไม่เปิดใช้** โค้ดแยกแล้ว (ดู "token สองใบ") แต่ต้องรอ xmanstudio รุ่นที่เก็บ `tunnel_token`
-แล้วค่อยตั้ง `Relay__IssueTunnelTokens=true` และย้าย worker เก่าด้วย `rotate?only=tunnel`
+แล้วค่อยตั้ง `Relay__IssueTunnelTokens=true` restart relay และให้ worker เก่ามีใบของตัวเองด้วย
+`php artisan gpuxmine:rotate-tunnel-tokens` บนเครื่องเว็บ (`--dry-run` ก่อน รันซ้ำจนไม่เหลือเครื่องค้าง) — ห้ามยิง `rotate?only=tunnel` เอง
 
 **แบนด์วิดท์** เครื่อง TPIX ใช้อยู่ ~0.2 GB/วันก่อนมี relay งานวิดีโอเป็นคนละระดับ
 ถ้าลิงก์คิดค่าทราฟฟิกหรือมีโควตา ต้องเฝ้าดู
