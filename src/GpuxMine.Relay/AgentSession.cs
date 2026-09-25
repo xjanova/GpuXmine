@@ -37,6 +37,13 @@ public sealed class AgentSession : IAsyncDisposable
     /// <summary>Pieces this small are copied out so a 64 KB block is not charged for a few bytes.</summary>
     private const int CopyBelowBytes = 8 * 1024;
 
+    /// <summary>
+    /// A request body goes to the node in pieces this size, each with its own
+    /// deadline (<see cref="RelayOptions.SendStallSeconds"/>): a whole upload
+    /// on one deadline would have to allow for the slowest home line there is.
+    /// </summary>
+    private const int SendSliceBytes = 1024 * 1024;
+
     private readonly WebSocket _socket;
     private readonly ILogger _log;
     private readonly RelayOptions _options;
@@ -63,6 +70,14 @@ public sealed class AgentSession : IAsyncDisposable
     /// <summary>Requests sent to the node that have not finished yet.</summary>
     public int InFlight => _pending.Count;
 
+    /// <summary>
+    /// Request bodies held for this node, from being read off aixman's
+    /// connection until they are on the node's socket. The tunnel handler
+    /// charges it alongside the relay-wide budgets, so what one node is slow
+    /// to take cannot crowd out every other node.
+    /// </summary>
+    public ByteBudget RequestBudget { get; }
+
     public AgentSession(
         string workerId,
         string? agentVersion,
@@ -78,6 +93,7 @@ public sealed class AgentSession : IAsyncDisposable
         _socket = socket;
         _options = options;
         _sessionBudget = new ByteBudget(options.SessionBufferBytes);
+        RequestBudget = new ByteBudget(Math.Max(options.SessionRequestBufferBytes, options.MaxRequestBodyBytes));
         _globalBudget = globalBudget;
         _log = log;
     }
@@ -352,22 +368,52 @@ public sealed class AgentSession : IAsyncDisposable
     /// impatient aixman request would take every other request in flight to
     /// this node with it.
     /// </summary>
+    /// <remarks>
+    /// The one thing that does abort it is the node itself not reading: see
+    /// <see cref="RelayOptions.SendStallSeconds"/>. That ends the session, as
+    /// a dead socket would.
+    /// </remarks>
     public async Task SendAsync(TunnelHeader header, ReadOnlyMemory<byte> body, CancellationToken ct)
     {
         byte[] head = WireCodec.EncodeHead(header);
         await _writeGate.WaitAsync(ct);
         try
         {
-            CancellationToken session = _closed.Token;
-            // The body goes as a second fragment of the same message, not
+            // The body goes as further fragments of the same message, not
             // copied in behind the header: an upload is already in memory once.
-            await _socket.SendAsync(head, WebSocketMessageType.Binary, endOfMessage: body.IsEmpty, session);
-            if (!body.IsEmpty)
-                await _socket.SendAsync(body, WebSocketMessageType.Binary, endOfMessage: true, session);
+            await WriteAsync(head, endOfMessage: body.IsEmpty);
+            for (int offset = 0; offset < body.Length; offset += SendSliceBytes)
+            {
+                int length = Math.Min(SendSliceBytes, body.Length - offset);
+                await WriteAsync(body.Slice(offset, length), endOfMessage: offset + length == body.Length);
+            }
         }
         finally
         {
             _writeGate.Release();
+        }
+    }
+
+    /// <summary>One fragment onto the socket, within <see cref="RelayOptions.SendStallSeconds"/> or not at all.</summary>
+    private async Task WriteAsync(ReadOnlyMemory<byte> bytes, bool endOfMessage)
+    {
+        using var stall = CancellationTokenSource.CreateLinkedTokenSource(_closed.Token);
+        stall.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, _options.SendStallSeconds)));
+        try
+        {
+            await _socket.SendAsync(bytes, WebSocketMessageType.Binary, endOfMessage, stall.Token);
+        }
+        catch (OperationCanceledException) when (!_closed.IsCancellationRequested)
+        {
+            // The node's receive window has been full for the whole wait: it
+            // is connected, perhaps still sending heartbeats, and not reading.
+            // Everything queued for it — and the buffer budget those requests
+            // hold — would wait on it indefinitely, so the session goes.
+            _log.LogWarning("Agent {WorkerId} stopped reading: {Bytes} bytes did not go out in {Seconds}s — closing its session",
+                WorkerId, bytes.Length, _options.SendStallSeconds);
+            _closed.Cancel();
+            _socket.Abort();
+            throw new WebSocketException(WebSocketError.ConnectionClosedPrematurely, "the node stopped reading");
         }
     }
 

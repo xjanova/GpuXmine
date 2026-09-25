@@ -43,7 +43,7 @@ public static class RelayHost
         builder.Services.AddSingleton(options);
         builder.Services.AddSingleton(sp => new WorkerStore(options.StorePath, sp.GetRequiredService<ILoggerFactory>().CreateLogger("store")));
         builder.Services.AddSingleton<AgentRegistry>();
-        builder.Services.AddSingleton(new RelayBudget(options.BufferBudgetBytes));
+        builder.Services.AddSingleton(new RelayBudget(options.BufferBudgetBytes, options.RequestBufferBudgetBytes));
         builder.Services.AddHostedService<SessionSweeper>();
         builder.Services.AddRateLimiter(limiter => ConfigureRateLimits(limiter, options));
 
@@ -326,7 +326,7 @@ public static class RelayHost
 
         // --- the tunnel aixman talks to -------------------------------------------
         app.Map("/w/{workerId}/{**path}", (HttpContext context, string workerId, string? path, WorkerStore store, AgentRegistry registry, RelayBudget budget)
-            => TunnelAsync(context, workerId, path, store, registry, budget.Budget, options, log));
+            => TunnelAsync(context, workerId, path, store, registry, budget, options, log));
     }
 
     private static object IssuedReply(HttpRequest request, IssuedTokens issued)
@@ -374,7 +374,7 @@ public static class RelayHost
         string? path,
         WorkerStore store,
         AgentRegistry registry,
-        ByteBudget budget,
+        RelayBudget relayBudget,
         RelayOptions options,
         ILogger log)
     {
@@ -416,16 +416,21 @@ public static class RelayHost
             return;
         }
 
-        // Charged to the relay-wide budget from the moment it is read until it
-        // has been sent to the node, so a burst of uploads cannot add up to more
-        // than the relay has room for.
+        // Charged from the moment it is read until it has been sent to the
+        // node, three ways: to this node (so what one node is slow to take is
+        // its own problem), to the requests' share of the relay (so replies
+        // always have room), and to the relay as a whole. It used to be the
+        // last one only, and one worker whose agent stopped reading could hold
+        // more than the relay had, failing every other node's uploads and
+        // replies until it let go.
+        ByteBudget[] budgets = [session.RequestBudget, relayBudget.Requests, relayBudget.Budget];
         long charged = 0;
         try
         {
             byte[] body;
             if (declared is long length)
             {
-                if (!budget.TryReserve(length))
+                if (!ByteBudget.TryReserveAll(length, budgets))
                 {
                     await BusyAsync(context.Response);
                     return;
@@ -436,7 +441,7 @@ public static class RelayHost
             }
             else
             {
-                UnsizedBody read = await ReadUnsizedBodyAsync(context, budget, options.MaxRequestBodyBytes);
+                UnsizedBody read = await ReadUnsizedBodyAsync(context, budgets, options.MaxRequestBodyBytes);
                 charged = read.Charged;
                 if (read.TooLarge)
                 {
@@ -485,7 +490,7 @@ public static class RelayHost
             finally
             {
                 // On the wire (or never going to be): the relay no longer holds it.
-                budget.Release(charged);
+                ByteBudget.ReleaseAll(charged, budgets);
                 charged = 0;
             }
 
@@ -517,14 +522,14 @@ public static class RelayHost
         }
         finally
         {
-            budget.Release(charged);
+            ByteBudget.ReleaseAll(charged, budgets);
         }
     }
 
     /// <summary>A body that came without a Content-Length. <see cref="Charged"/> is reserved whatever else happened, and the caller releases it.</summary>
     private readonly record struct UnsizedBody(byte[]? Body, long Charged, bool TooLarge);
 
-    private static async Task<UnsizedBody> ReadUnsizedBodyAsync(HttpContext context, ByteBudget budget, long max)
+    private static async Task<UnsizedBody> ReadUnsizedBodyAsync(HttpContext context, ByteBudget[] budgets, long max)
     {
         using var buffer = new MemoryStream();
         var chunk = new byte[64 * 1024];
@@ -533,7 +538,7 @@ public static class RelayHost
         while ((read = await context.Request.Body.ReadAsync(chunk, context.RequestAborted)) > 0)
         {
             if (buffer.Length + read > max) return new UnsizedBody(null, charged, TooLarge: true);
-            if (!budget.TryReserve(read)) return new UnsizedBody(null, charged, TooLarge: false);
+            if (!ByteBudget.TryReserveAll(read, budgets)) return new UnsizedBody(null, charged, TooLarge: false);
             charged += read;
             buffer.Write(chunk, 0, read);
         }
@@ -762,8 +767,13 @@ public static class RelayHost
     }
 }
 
-/// <summary>The relay-wide byte budget, as a service so every session and the tunnel handler share one.</summary>
-public sealed class RelayBudget(long capacity)
+/// <summary>The relay-wide byte budgets, as a service so every session and the tunnel handler share them.</summary>
+/// <param name="capacity">Everything the relay holds: see <see cref="RelayOptions.BufferBudgetBytes"/>.</param>
+/// <param name="requestCapacity">The most of that request bodies may take: see <see cref="RelayOptions.RequestBufferBudgetBytes"/>.</param>
+public sealed class RelayBudget(long capacity, long requestCapacity)
 {
     public ByteBudget Budget { get; } = new(capacity);
+
+    /// <summary>Request bodies on their way to a node, together. Charged alongside <see cref="Budget"/>, never instead of it.</summary>
+    public ByteBudget Requests { get; } = new(Math.Clamp(requestCapacity, 1, capacity));
 }

@@ -70,6 +70,31 @@ public sealed class RelayOptions
     public long BufferBudgetBytes { get; set; } = 384L * 1024 * 1024;
 
     /// <summary>
+    /// How much of <see cref="BufferBudgetBytes"/> request bodies may take
+    /// between them. The rest is always there for replies, so uploads piling up
+    /// behind nodes that are slow to take them can never stop another node's
+    /// answers — a readiness probe, a finished render — from getting through.
+    /// </summary>
+    public long RequestBufferBudgetBytes { get; set; } = 192L * 1024 * 1024;
+
+    /// <summary>
+    /// Request bytes the relay will hold for one worker at a time, on their way
+    /// to its node. Never less than <see cref="MaxRequestBodyBytes"/>. Before
+    /// this, request bodies counted only against the relay-wide budget, and one
+    /// node that stopped reading could hold all of it.
+    /// </summary>
+    public long SessionRequestBufferBytes { get; set; } = 64L * 1024 * 1024;
+
+    /// <summary>
+    /// How long one write to a node — a megabyte of an upload, or a frame's
+    /// header — may take before the node is treated as having stopped reading
+    /// and its session is closed. A node that keeps sending heartbeats but
+    /// never reads would otherwise hold every request sent to it, and the
+    /// buffers they sit in, for as long as it liked.
+    /// </summary>
+    public int SendStallSeconds { get; set; } = 30;
+
+    /// <summary>
     /// How long a node's reply may wait for room in a full buffer (aixman not
     /// reading) before that one reply is abandoned. Short on purpose: while it
     /// waits, that node's other traffic waits behind it.

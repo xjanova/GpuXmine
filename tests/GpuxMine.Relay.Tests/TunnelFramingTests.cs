@@ -342,6 +342,8 @@ public class TunnelFramingTests
         Assert.Equal(HttpStatusCode.RequestEntityTooLarge, tooBig.StatusCode);
         Assert.True(await agent.QuietForAsync(TimeSpan.FromMilliseconds(300)));
         Assert.Equal(0, relay.Service<RelayBudget>().Budget.Used);
+        Assert.Equal(0, relay.Service<RelayBudget>().Requests.Used);
+        Assert.Equal(0, relay.Service<AgentRegistry>().Get(worker.WorkerId)!.RequestBudget.Used);
     }
 
     [Fact]
