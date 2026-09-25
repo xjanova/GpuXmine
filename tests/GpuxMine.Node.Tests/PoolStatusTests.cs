@@ -861,6 +861,123 @@ public class PoolStatusTests
         Assert.Null(pool.Alert);
     }
 
+    // ------------------------------------------------ a lifted suspension
+
+    /// <summary>A relay that answers the node's dial 403 worker-disabled while <see cref="Refuse"/> is set, and otherwise holds the socket open.</summary>
+    private sealed class DisablingRelay : IAsyncDisposable
+    {
+        private readonly WebApplication _app;
+        private int _attempts;
+
+        public volatile bool Refuse = true;
+        public int Attempts => Volatile.Read(ref _attempts);
+        public string AgentUrl { get; }
+
+        private DisablingRelay(WebApplication app)
+        {
+            _app = app;
+            AgentUrl = app.Urls.First().Replace("http://", "ws://", StringComparison.Ordinal) + "/agent";
+        }
+
+        public static async Task<DisablingRelay> StartAsync()
+        {
+            var builder = WebApplication.CreateBuilder();
+            builder.WebHost.UseUrls("http://127.0.0.1:0");
+            builder.Logging.ClearProviders();
+            var app = builder.Build();
+            app.UseWebSockets();
+            DisablingRelay? relay = null;
+            app.Map("/agent", async (HttpContext context) =>
+            {
+                Interlocked.Increment(ref relay!._attempts);
+                if (relay.Refuse)
+                {
+                    context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                    await context.Response.WriteAsJsonAsync(new { error = "worker-disabled" });
+                    return;
+                }
+                if (!context.WebSockets.IsWebSocketRequest) { context.Response.StatusCode = 400; return; }
+                using var socket = await context.WebSockets.AcceptWebSocketAsync();
+                var buffer = new byte[64 * 1024];
+                try
+                {
+                    while (socket.State == System.Net.WebSockets.WebSocketState.Open)
+                    {
+                        var read = await socket.ReceiveAsync(buffer, context.RequestAborted);
+                        if (read.MessageType == System.Net.WebSockets.WebSocketMessageType.Close) break;
+                    }
+                }
+                catch (Exception)
+                {
+                    // The node went away.
+                }
+            });
+            await app.StartAsync();
+            relay = new DisablingRelay(app);
+            return relay;
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await _app.StopAsync();
+            await _app.DisposeAsync();
+        }
+    }
+
+    private static async Task Eventually(Func<bool> condition, int timeoutMs = 10_000)
+    {
+        DateTime deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+        while (!condition())
+        {
+            if (DateTime.UtcNow > deadline) Assert.Fail("the node did not get there in time");
+            await Task.Delay(50);
+        }
+    }
+
+    [Fact]
+    public async Task A_lifted_suspension_reconnects_at_once_instead_of_waiting_out_the_relays_403()
+    {
+        using var dir = new TempDir();
+        await using var studio = await FakeStudio.StartAsync();
+        await using var relay = await DisablingRelay.StartAsync();
+        studio.Body = Answer(dispatchStatus: "suspended", suspended: true, suspendedReason: "ตรวจสอบผลงาน");
+        await using var host = new NodeHost(Paired(dir, studio.Url) with { RelayUrl = relay.AgentUrl });
+
+        await host.OwnerStartAsync();
+        await Eventually(() => relay.Attempts == 1 && host.State.Connection == ConnectionState.Rejected);
+        await host.PollPoolStatusOnceAsync(CancellationToken.None);   // still suspended: nothing changes
+        await Task.Delay(300);
+        Assert.Equal(1, relay.Attempts);
+
+        // The admin resumes it: the relay lets the worker in again, and XMAN
+        // Studio says so on the next status call. The node's own wait after
+        // the 403 has minutes left to run.
+        relay.Refuse = false;
+        studio.Body = Answer();
+        await host.PollPoolStatusOnceAsync(CancellationToken.None);
+
+        await Eventually(() => relay.Attempts == 2 && host.State.Connection == ConnectionState.Connected);
+    }
+
+    [Fact]
+    public async Task A_worker_disabled_only_at_the_relay_is_not_knocked_on_at_every_status_call()
+    {
+        using var dir = new TempDir();
+        await using var studio = await FakeStudio.StartAsync();
+        await using var relay = await DisablingRelay.StartAsync();
+        studio.Body = Answer();   // XMAN Studio has nothing against it: an operator disabled it at the relay
+        await using var host = new NodeHost(Paired(dir, studio.Url) with { RelayUrl = relay.AgentUrl });
+
+        await host.OwnerStartAsync();
+        await Eventually(() => relay.Attempts == 1 && host.State.Connection == ConnectionState.Rejected);
+        await host.PollPoolStatusOnceAsync(CancellationToken.None);
+        await host.PollPoolStatusOnceAsync(CancellationToken.None);
+        await Task.Delay(500);
+
+        Assert.Equal(1, relay.Attempts);
+        Assert.Equal(ConnectionState.Rejected, host.State.Connection);
+    }
+
     [Fact]
     public void Money_is_a_dash_until_it_is_known_and_never_a_float()
     {

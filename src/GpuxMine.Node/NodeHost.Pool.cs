@@ -164,15 +164,17 @@ public sealed partial class NodeHost
                 if (await ReadJobPagesAsync(workerId, token, status, cursor, fresh: kept is null, ct) is not { } pass)
                     return TimeSpan.Zero;   // re-paired between two pages
 
-                Publish(new PoolView
+                var view = new PoolView
                 {
                     Outcome = PoolOutcome.Ok,
                     Last = pass.Latest,
                     LastOkAt = now,
                     CheckedAt = now,
                     LedgerChanges = pass.Moved.Count,
-                });
+                };
+                Publish(view);
                 SayWhatWasPaid(pass.Moved, pass.Latest.Earnings?.HoldHours);
+                NoteSuspension(view.Suspended);
                 return pass.More && PoolCatchUp < cadence ? PoolCatchUp : cadence;
 
             case StudioOutcome.IdentityRejected:
@@ -209,6 +211,26 @@ public sealed partial class NodeHost
                     PoolPollFailureCap.TotalMinutes));
                 return backoff > cadence ? backoff : cadence;
         }
+    }
+
+    /// <summary>Whether the last answer from XMAN Studio said an administrator had suspended this machine.</summary>
+    private bool _poolSawSuspended;
+
+    /// <summary>
+    /// A suspension lifted at XMAN Studio reaches the relay connection at
+    /// once, instead of when its wait after the relay's 403 runs out.
+    /// </summary>
+    /// <remarks>
+    /// Only on the change from suspended to not: a worker an operator disabled
+    /// at the relay directly is not suspended at XMAN Studio either, and must
+    /// not be knocked on every few minutes because of that.
+    /// </remarks>
+    private void NoteSuspension(bool suspended)
+    {
+        bool lifted = _poolSawSuspended && !suspended;
+        _poolSawSuspended = suspended;
+        if (lifted && _connection?.RetryDisabledNow() == true)
+            Log.Info("[pool] ผู้ดูแลยกเลิกการระงับเครื่องนี้แล้ว — กลับมาเชื่อมต่อ relay");
     }
 
     private bool SameIdentity(string workerId, string token) =>
@@ -428,6 +450,7 @@ public sealed partial class NodeHost
     private void ForgetPool()
     {
         _poolFailures = 0;
+        _poolSawSuspended = false;
         _poolLastSaid = null;
         State.SetPool(PoolView.None);
         RefreshPoolStatus();

@@ -76,6 +76,7 @@ public sealed class RelayConnection(
         while (!ct.IsCancellationRequested)
         {
             TimeSpan? wait = null;
+            bool disabled = false;
             try
             {
                 await ConnectOnceAsync(ct);
@@ -98,6 +99,7 @@ public sealed class RelayConnection(
                     RefusedBackoff.Ticks * (1L << Math.Min(refusals, 3)),
                     RefusedBackoffMax.Ticks));
                 refusals++;
+                disabled = ex.Status == 403;
             }
             catch (Exception ex)
             {
@@ -113,7 +115,58 @@ public sealed class RelayConnection(
             wait += TimeSpan.FromMilliseconds(Random.Shared.Next(0, 3000));
             attempt++;
             log.Info($"reconnecting in {wait.Value.TotalSeconds:0}s");
-            try { await Task.Delay(wait.Value, ct); } catch (OperationCanceledException) { return; }
+
+            // Only the wait after a 403 can be cut short: that is the one a
+            // lifted suspension ends (RetryDisabledNow). A 401 is a dead token,
+            // and asking again sooner changes nothing.
+            using var cut = disabled ? CancellationTokenSource.CreateLinkedTokenSource(ct) : null;
+            if (cut is not null) Volatile.Write(ref _disabledWait, cut);
+            try
+            {
+                await Task.Delay(wait.Value, cut?.Token ?? ct);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                // Cut short by RetryDisabledNow; the host has said why.
+                refusals = 0;
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            finally
+            {
+                if (cut is not null) Interlocked.CompareExchange(ref _disabledWait, null, cut);
+            }
+        }
+    }
+
+    /// <summary>The wait after the relay said 403, while it lasts. Cancelled by <see cref="RetryDisabledNow"/>.</summary>
+    private CancellationTokenSource? _disabledWait;
+
+    /// <summary>
+    /// Stops waiting out a 403 and connects again now. For when XMAN Studio
+    /// says the suspension behind it has been lifted.
+    /// </summary>
+    /// <remarks>
+    /// The wait after a 403 doubles to half an hour, so a machine resumed
+    /// after a long suspension went on refusing to connect for up to that
+    /// long — no work, while every page said it was fine and its owner
+    /// wondered whether to pair it again.
+    /// </remarks>
+    /// <returns>True when a wait was cut short; false when the connection was not waiting out a 403.</returns>
+    public bool RetryDisabledNow()
+    {
+        CancellationTokenSource? wait = Volatile.Read(ref _disabledWait);
+        if (wait is null) return false;
+        try
+        {
+            wait.Cancel();
+            return true;
+        }
+        catch (ObjectDisposedException)
+        {
+            return false;   // the wait ended on its own meanwhile
         }
     }
 
