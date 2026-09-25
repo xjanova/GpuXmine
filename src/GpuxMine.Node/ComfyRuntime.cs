@@ -253,6 +253,15 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
         if (method == "GET" && route.StartsWith("/history/", StringComparison.Ordinal))
             return await HistoryRequestAsync(route["/history/".Length..], pathAndQuery, headers, ct);
 
+        // The first request of a submission whenever aixman's copy of the
+        // node list has gone stale, so it is new work as much as the prompt
+        // behind it: a ComfyUI the owner just closed is "not now", answered
+        // with a stage. A bare 502 here reads to aixman as a failed attempt
+        // and a machine to avoid — two of those fail a community job no
+        // machine ever started.
+        if (method == "GET" && (route == "/object_info" || route.StartsWith("/object_info/", StringComparison.Ordinal)))
+            return await ForwardAsync(method, pathAndQuery, headers, body, ct, refuseWhenUnreachable: true);
+
         return await ForwardAsync(method, pathAndQuery, headers, body, ct);
     }
 

@@ -369,6 +369,45 @@ public class ComfyRuntimeTests
         Assert.False(runtime.HasTunnelWork);
     }
 
+    // aixman reads the node list first on every submission once its copy is
+    // ten minutes old. A 502 there is a failed attempt and a machine to avoid;
+    // a stage is "not now", and the job goes back in the queue whole.
+    [Theory]
+    [InlineData("/object_info")]
+    [InlineData("/object_info/KSampler")]
+    public async Task While_ComfyUI_is_down_the_node_list_is_refused_with_a_stage_not_a_502(string path)
+    {
+        await using var runtime = new ComfyRuntime(new NodeOptions { ComfyUrl = "http://127.0.0.1:9" }, new NullLog());
+        runtime.AssessmentSource = () => (Report("image"), null);
+
+        LocalReply reply = await Send(runtime, "GET", path);
+
+        Assert.Equal(503, reply.Status);
+        JsonNode body = Http.Body(reply);
+        Assert.False(body["ready"]!.GetValue<bool>());
+        Assert.Equal(ReadyStage.Paused, body["stage"]!.GetValue<string>());
+        Assert.Contains("ComfyUI", body["reason"]!.GetValue<string>());
+        Assert.Null(body["error"]);
+    }
+
+    // Only a ComfyUI that cannot be reached is turned into a stage. The list
+    // itself takes no work, so a node the owner has paused still answers it,
+    // and the prompt behind it is the one the gate refuses.
+    [Fact]
+    public async Task A_paused_node_still_answers_the_node_list()
+    {
+        await using var comfy = await FakeComfy.StartAsync();
+        await using var runtime = Runtime(comfy, () => new AcceptDecision(false, "เจ้าของกำลังใช้เครื่อง", ReadyStage.Paused));
+
+        LocalReply list = await Send(runtime, "GET", "/object_info");
+        LocalReply prompt = await Send(runtime, "POST", "/prompt", Http.ImagePrompt());
+
+        Assert.Equal(200, list.Status);
+        Assert.True(comfy.Reached("GET /object_info"));
+        Assert.Equal(503, prompt.Status);
+        Assert.Equal(ReadyStage.Paused, Http.Body(prompt)["stage"]!.GetValue<string>());
+    }
+
     [Fact]
     public async Task An_unknown_aixman_route_is_answered_here_not_forwarded()
     {
