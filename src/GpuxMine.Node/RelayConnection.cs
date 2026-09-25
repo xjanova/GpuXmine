@@ -294,14 +294,19 @@ public sealed class RelayConnection(
                     body,
                     request.Token);
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (request.IsCancellationRequested || runtime.Stopping)
             {
-                return; // the relay gave up on it, or the session ended
+                return; // the relay gave up on it, the session ended, or the node is shutting down
             }
             catch (Exception ex)
             {
+                // Any other cancellation is a timeout on this side of the
+                // tunnel. Answered: silence here leaves aixman waiting out the
+                // relay's whole wait for the same outcome.
                 log.Warn($"handler for {header.Method} {header.Path} threw: {ex.Message}");
-                reply = LocalReply.Json(500, new { error = "agent handler failed", detail = ex.Message });
+                reply = ex is OperationCanceledException
+                    ? LocalReply.Json(504, new { error = "local runtime timed out", detail = ex.Message })
+                    : LocalReply.Json(500, new { error = "agent handler failed", detail = ex.Message });
             }
 
             try

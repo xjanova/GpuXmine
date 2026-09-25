@@ -390,6 +390,85 @@ public class ComfyRuntimeTests
         Assert.Null(body["error"]);
     }
 
+    // ------------------------------------- a ComfyUI that takes and never answers
+
+    // Accepts the connection, then nothing: stuck loading a model, or wedged.
+    // HttpClient's own timeout ends it as a cancellation, which used to be let
+    // through as if the relay had cancelled — no answer at all went back down
+    // the tunnel, and aixman waited out the relay's three minutes.
+    private static ComfyRuntime Wedged(FakeComfy comfy, string hang)
+    {
+        comfy.Hangs.Add(hang);
+        return Runtime(comfy, options: new NodeOptions { ComfyUrl = comfy.Url, ComfyTimeoutSeconds = 1 });
+    }
+
+    [Theory]
+    [InlineData("GET", "/object_info", "GET /object_info")]
+    [InlineData("GET", "/object_info/KSampler", "GET /object_info")]
+    [InlineData("GET", "/aixman/ready", "GET /system_stats")]
+    [InlineData("POST", "/prompt", "POST /prompt")]
+    [InlineData("POST", "/upload/image", "POST /upload/image")]
+    public async Task New_work_ComfyUI_takes_and_never_answers_is_refused_with_a_stage(string method, string path, string hang)
+    {
+        await using var comfy = await FakeComfy.StartAsync();
+        await using var runtime = Wedged(comfy, hang);
+        var (uploadHeaders, uploadBody) = Http.Upload("aixman-first-1.png");
+        bool upload = path == "/upload/image";
+
+        LocalReply reply = await runtime.HandleAsync(method, path,
+            upload ? uploadHeaders : Http.NoHeaders,
+            upload ? uploadBody : path == "/prompt" ? Http.ImagePrompt() : [],
+            CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(20));
+
+        Assert.True(comfy.Reached(hang));
+        Assert.Equal(503, reply.Status);
+        JsonNode body = Http.Body(reply);
+        Assert.False(body["ready"]!.GetValue<bool>());
+        Assert.Equal(ReadyStage.Paused, body["stage"]!.GetValue<string>());
+        Assert.Contains("ไม่ตอบภายใน 1 วินาที", body["reason"]!.GetValue<string>());
+        Assert.False(runtime.HasTunnelWork);
+    }
+
+    [Theory]
+    [InlineData("GET", "/history/p-tunnel", "GET /history/p-tunnel")]
+    [InlineData("GET", "/queue", "GET /queue")]
+    [InlineData("POST", "/history", "POST /history")]
+    public async Task Anything_else_ComfyUI_never_answers_is_a_504_not_silence(string method, string path, string hang)
+    {
+        await using var comfy = await FakeComfy.StartAsync();
+        await using var runtime = Wedged(comfy, hang);
+        runtime.TrackTunnelPrompt("p-tunnel");
+
+        LocalReply reply = await runtime.HandleAsync(method, path, Http.NoHeaders,
+            method == "POST" ? Http.Json(new { delete = new[] { "p-tunnel" } }) : [],
+            CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(20));
+
+        Assert.True(comfy.Reached(hang));
+        Assert.Equal(504, reply.Status);
+        Assert.Equal("local runtime timed out", Http.Body(reply)["error"]!.GetValue<string>());
+    }
+
+    // The relay's own cancellation is still the one thing not answered: it has
+    // stopped listening for the id, and nobody is waiting for the reply.
+    [Fact]
+    public async Task The_relay_cancelling_is_not_mistaken_for_ComfyUI_timing_out()
+    {
+        await using var comfy = await FakeComfy.StartAsync();
+        comfy.Hangs.Add("GET /queue");
+        comfy.Hangs.Add("GET /object_info");
+        await using var runtime = Runtime(comfy, options: new NodeOptions { ComfyUrl = comfy.Url, ComfyTimeoutSeconds = 60 });
+
+        foreach (string path in new[] { "/queue", "/object_info" })
+        {
+            using var relayGaveUp = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
+            var started = System.Diagnostics.Stopwatch.StartNew();
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                runtime.HandleAsync("GET", path, Http.NoHeaders, [], relayGaveUp.Token).WaitAsync(TimeSpan.FromSeconds(20)));
+            Assert.True(started.Elapsed < TimeSpan.FromSeconds(10), $"{path} waited {started.Elapsed} instead of stopping with the relay");
+        }
+    }
+
     // Only a ComfyUI that cannot be reached is turned into a stage. The list
     // itself takes no work, so a node the owner has paused still answers it,
     // and the prompt behind it is the one the gate refuses.

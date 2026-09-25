@@ -72,7 +72,7 @@ public class AgentRoundTripTests
         return request;
     }
 
-    private static async Task<(WebApplication App, string Directory)> StartRelayAsync(bool streamReplies)
+    private static async Task<(WebApplication App, string Directory)> StartRelayAsync(bool streamReplies, int tunnelTimeoutSeconds = 180)
     {
         string directory = Path.Combine(Path.GetTempPath(), "gxm-relay-tests", Guid.NewGuid().ToString("n"));
         Directory.CreateDirectory(directory);
@@ -85,6 +85,7 @@ public class AgentRoundTripTests
                 ["Relay:AdminKey"] = RelayTestHost.AdminKey,
                 ["Relay:StreamReplies"] = streamReplies ? "true" : "false",
                 ["Relay:IssueTunnelTokens"] = "true",
+                ["Relay:TunnelTimeoutSeconds"] = tunnelTimeoutSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture),
             });
             builder.Logging.ClearProviders();
         });
@@ -158,6 +159,104 @@ public class AgentRoundTripTests
         }
         finally
         {
+            await relay.StopAsync(CancellationToken.None);
+            await relay.DisposeAsync();
+            await comfy.StopAsync(CancellationToken.None);
+            await comfy.DisposeAsync();
+            try { Directory.Delete(directory, recursive: true); } catch (IOException) { }
+        }
+    }
+
+    /// <summary>
+    /// A ComfyUI that takes the connection and never answers — wedged, or
+    /// stuck loading a model — is answered by the node when its own timeout
+    /// runs out: a stage for the node list, a 504 of its own for the rest.
+    /// It used to say nothing, and aixman heard only the relay's timeout, the
+    /// whole wait later, as a 504 that counts against the machine.
+    /// </summary>
+    [Fact]
+    public async Task A_ComfyUI_that_never_answers_is_answered_by_the_node_before_the_relay_gives_up()
+    {
+        using var released = new CancellationTokenSource();
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseUrls("http://127.0.0.1:0");
+        builder.Logging.ClearProviders();
+        var comfy = builder.Build();
+        async Task Wedged(HttpContext context)
+        {
+            using var held = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, released.Token);
+            try { await Task.Delay(Timeout.Infinite, held.Token); } catch (OperationCanceledException) { }
+        }
+        comfy.MapGet("/queue", () => Results.Json(new { queue_running = Array.Empty<object>(), queue_pending = Array.Empty<object>() }));
+        comfy.MapGet("/object_info", Wedged);
+        comfy.MapPost("/prompt", async (HttpRequest request) =>
+        {
+            var body = await System.Text.Json.Nodes.JsonNode.ParseAsync(request.Body);
+            return Results.Json(new { prompt_id = body!["prompt_id"]!.GetValue<string>(), number = 1, node_errors = new { } });
+        });
+        comfy.MapGet("/history/{id}", Wedged);
+        await StartOnLoopbackAsync(comfy);
+
+        // The relay's wait is cut to twenty seconds so a regression fails in
+        // twenty, not a hundred and eighty — still far longer than the node's one.
+        var (relay, directory) = await StartRelayAsync(streamReplies: true, tunnelTimeoutSeconds: 20);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        try
+        {
+            string relayUrl = relay.Urls.First();
+            using var http = new HttpClient { BaseAddress = new Uri(relayUrl) };
+
+            using var enrol = new HttpRequestMessage(HttpMethod.Post, "/enroll?label=wedged");
+            enrol.Headers.Add("X-Admin-Key", RelayTestHost.AdminKey);
+            using HttpResponseMessage enrolled = await http.SendAsync(enrol, cts.Token);
+            Enrolled worker = (await enrolled.Content.ReadFromJsonAsync<Enrolled>(RelayTestHost.Json, cts.Token))!;
+
+            var options = new NodeOptions
+            {
+                RelayUrl = relayUrl.Replace("http://", "ws://", StringComparison.Ordinal) + "/agent",
+                WorkerId = worker.WorkerId,
+                Token = worker.Token!,
+                ComfyUrl = comfy.Urls.First(),
+                ComfyTimeoutSeconds = 1,
+                HeartbeatSeconds = 3,
+            };
+            var log = new CapturingLog();
+            await using var runtime = new ComfyRuntime(options, log);
+            var connection = new RelayConnection(options, runtime, log);
+            Task running = connection.RunForeverAsync(cts.Token);
+            await WaitUntilAsync(() => relay.Services.GetRequiredService<AgentRegistry>().Get(worker.WorkerId) is not null, cts.Token);
+
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            using (HttpResponseMessage list = await http.SendAsync(Tunnel(HttpMethod.Get, worker, "/object_info"), cts.Token))
+            {
+                Assert.Equal(HttpStatusCode.ServiceUnavailable, list.StatusCode);
+                var body = (await list.Content.ReadFromJsonAsync<System.Text.Json.Nodes.JsonObject>(cts.Token))!;
+                Assert.Equal(ReadyStage.Paused, body["stage"]!.GetValue<string>());
+                Assert.Contains("ComfyUI", body["reason"]!.GetValue<string>());
+            }
+            Assert.True(clock.Elapsed < TimeSpan.FromSeconds(15), $"the node list took {clock.Elapsed}");
+
+            using HttpResponseMessage submitted = await http.SendAsync(Tunnel(HttpMethod.Post, worker, "/prompt",
+                JsonContent.Create(new { prompt = new { }, client_id = "aixman" })), cts.Token);
+            Assert.Equal(HttpStatusCode.OK, submitted.StatusCode);
+            string promptId = (await submitted.Content.ReadFromJsonAsync<System.Text.Json.Nodes.JsonObject>(cts.Token))!["prompt_id"]!.GetValue<string>();
+
+            clock.Restart();
+            using (HttpResponseMessage history = await http.SendAsync(Tunnel(HttpMethod.Get, worker, $"/history/{promptId}"), cts.Token))
+            {
+                Assert.Equal(HttpStatusCode.GatewayTimeout, history.StatusCode);
+                // The node's own 504, not the relay's "node did not answer in time".
+                var body = (await history.Content.ReadFromJsonAsync<System.Text.Json.Nodes.JsonObject>(cts.Token))!;
+                Assert.Equal("local runtime timed out", body["error"]!.GetValue<string>());
+            }
+            Assert.True(clock.Elapsed < TimeSpan.FromSeconds(15), $"the history read took {clock.Elapsed}");
+
+            await cts.CancelAsync();
+            await running;
+        }
+        finally
+        {
+            await released.CancelAsync();
             await relay.StopAsync(CancellationToken.None);
             await relay.DisposeAsync();
             await comfy.StopAsync(CancellationToken.None);

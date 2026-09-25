@@ -186,7 +186,7 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
         _options = options;
         _log = log;
         _acceptGate = acceptGate ?? (() => AcceptDecision.Yes);
-        _http = Core.Net.NodeHttp.Create(TimeSpan.FromSeconds(150));
+        _http = Core.Net.NodeHttp.Create(TimeSpan.FromSeconds(Math.Clamp(options.ComfyTimeoutSeconds, 1, 3600)));
     }
 
     public bool Listening => _listening;
@@ -330,7 +330,7 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
-            return LocalReply.Json(503, new { ready = false, stage = ReadyStage.Paused, reason = ComfyNotAnswering, detail = ex.Message });
+            return LocalReply.Json(503, new { ready = false, stage = ReadyStage.Paused, reason = NotAnswering(ex), detail = ex.Message });
         }
     }
 
@@ -510,7 +510,22 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
 
         bool landed = await ReadQueueAsync(_stopping.Token) is { } queue && queue.PromptIds.Contains(rewrite.PromptId);
         if (!landed)
-            landed = (await HistoryAsync(rewrite.PromptId, _stopping.Token)).State is HistoryState.Done or HistoryState.Pending;
+        {
+            // Bounded like the queue read. A ComfyUI that has just run out
+            // HttpClient's whole timeout on the submission is likely to do the
+            // same here, and a second full timeout would carry the answer past
+            // the relay's own — the silence this path exists to prevent.
+            using var bounded = CancellationTokenSource.CreateLinkedTokenSource(_stopping.Token);
+            bounded.CancelAfter(UnansweredHistoryTimeout);
+            try
+            {
+                landed = (await HistoryAsync(rewrite.PromptId, bounded.Token)).State is HistoryState.Done or HistoryState.Pending;
+            }
+            catch (OperationCanceledException) when (!_stopping.IsCancellationRequested)
+            {
+                // No answer about it either: not known to be queued.
+            }
+        }
 
         if (landed)
         {
@@ -524,8 +539,11 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
             ForgetLocked(rewrite.PromptId);
             _graphs.Remove("");
         }
-        return LocalReply.Json(503, new { ready = false, stage = ReadyStage.Paused, reason = ComfyNotAnswering, detail = ex.Message });
+        return LocalReply.Json(503, new { ready = false, stage = ReadyStage.Paused, reason = NotAnswering(ex), detail = ex.Message });
     }
+
+    /// <summary>How long a submission ComfyUI never answered waits to hear from its history whether it landed.</summary>
+    private static readonly TimeSpan UnansweredHistoryTimeout = TimeSpan.FromSeconds(10);
 
     /// <summary>A prompt ComfyUI has taken: tracked, recorded, and any events that beat its answer replayed.</summary>
     private void Accept(string promptId, PromptRewrite rewrite)
@@ -596,6 +614,18 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
     /// New work: a ComfyUI that cannot be reached is answered as the gate
     /// would have answered it, with a stage, not as a failed request.
     /// </param>
+    /// <remarks>
+    /// <para>
+    /// A ComfyUI that takes the connection and then never answers — stuck
+    /// loading a model, or wedged — ends in HttpClient's own timeout, which
+    /// arrives as a cancellation. It used to be let through as if the relay
+    /// had cancelled: nothing went back down the tunnel, and aixman waited out
+    /// the relay's three minutes for a 504 it counts against the node. Only
+    /// the caller's own token going off, or the node shutting down, means
+    /// nobody is waiting; every other cancellation is answered — with a stage
+    /// for new work, a 504 otherwise.
+    /// </para>
+    /// </remarks>
     private async Task<LocalReply> ForwardAsync(string method, string pathAndQuery, Dictionary<string, string> headers, byte[] body,
         CancellationToken ct, bool refuseWhenUnreachable = false)
     {
@@ -603,14 +633,31 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
         {
             return await SendToComfyAsync(method, pathAndQuery, headers, body, ct);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (OperationCanceledException) when (ct.IsCancellationRequested || Stopping)
         {
-            Note($"forward {method} {pathAndQuery} failed: {ex.Message}");
-            return refuseWhenUnreachable
-                ? LocalReply.Json(503, new { ready = false, stage = ReadyStage.Paused, reason = ComfyNotAnswering, detail = ex.Message })
+            throw;   // the relay gave up on the request, or the node is shutting down
+        }
+        catch (Exception ex)
+        {
+            bool timedOut = ex is OperationCanceledException;
+            Note($"forward {method} {Clip(pathAndQuery)} {(timedOut ? "timed out" : "failed")}: {ex.Message}");
+
+            if (refuseWhenUnreachable)
+                return LocalReply.Json(503, new { ready = false, stage = ReadyStage.Paused, reason = NotAnswering(ex), detail = ex.Message });
+
+            return timedOut
+                ? LocalReply.Json(504, new { error = "local runtime timed out", detail = ex.Message })
                 : LocalReply.Json(502, new { error = "local runtime unreachable", detail = ex.Message });
         }
     }
+
+    /// <summary>
+    /// The owner's words for a ComfyUI that did not answer: closed, or — when
+    /// it took the request and ran out the clock — stuck.
+    /// </summary>
+    private string NotAnswering(Exception ex) => ex is OperationCanceledException
+        ? $"ComfyUI ในเครื่องรับคำขอแล้วแต่ไม่ตอบภายใน {Math.Ceiling(_http.Timeout.TotalSeconds):0} วินาที — อาจค้างอยู่หรือกำลังโหลดโมเดล"
+        : ComfyNotAnswering;
 
     /// <summary>One request to the local ComfyUI, read to the end. Throws when ComfyUI cannot be reached.</summary>
     private async Task<LocalReply> SendToComfyAsync(string method, string pathAndQuery, Dictionary<string, string> headers, byte[] body, CancellationToken ct)
@@ -1110,6 +1157,13 @@ public sealed partial class ComfyRuntime : IAsyncDisposable
             if (_recentLog.Count > 200) _recentLog.RemoveRange(0, _recentLog.Count - 200);
         }
     }
+
+    /// <summary>
+    /// Being disposed. A request cut short by it is not answered: the session
+    /// ends with the node, and the relay tells aixman <c>offline</c> — "warming,
+    /// ask again" — where an answer from here would count against the machine.
+    /// </summary>
+    internal bool Stopping => _stopping.IsCancellationRequested;
 
     public async ValueTask DisposeAsync()
     {

@@ -245,6 +245,12 @@ ComfyUI-Manager (ติดตั้ง custom node = รันโค้ดบน
   `GET /object_info[/{cls}]` ก็เช่นกัน: aixman ถามมันเป็นคำขอแรกของการส่งงานทุกครั้งที่ schema ในแคชเกิน 10 นาที
   ComfyUI ไม่ตอบจึงได้ 503 `{ready:false, stage:"paused"}` ไม่ใช่ 502 (ส่วนเครื่องที่พักด้วยเหตุอื่นยังตอบรายการ node ตามปกติ
   เพราะรายการไม่ได้รับงาน `POST /prompt` ที่ตามมาคือตัวที่ถูกปฏิเสธ)
+- **ComfyUI รับคำขอแล้วเงียบ** (ค้าง หรือกำลังโหลดโมเดล) — เครื่องรอได้นาน `ComfyTimeoutSeconds` (ค่าเริ่ม 150 วินาที
+  ต่ำกว่า `Relay__TunnelTimeoutSeconds` 180 ของ relay โดยตั้งใจ) แล้วตอบเอง: `/aixman/ready` · `POST /prompt` · `POST /upload/image` ·
+  `GET /object_info[/{cls}]` ได้ 503 `{ready:false, stage:"paused", reason:"ComfyUI ในเครื่องรับคำขอแล้วแต่ไม่ตอบภายใน … วินาที …"}`
+  ส่วนคำขออื่น (`/history/{id}` · `/queue` · `/view` · `POST /history` · `/interrupt`) ได้ 504 `{error:"local runtime timed out"}`
+  — เดิมเครื่องเงียบ แล้ว aixman ได้ 504 ของ relay หลังรอครบ 3 นาที ซึ่งนับเป็นเครื่องทำงานล้ม
+  เครื่องไม่ตอบเฉพาะเมื่อ relay ยกเลิกคำขอเอง (aixman เลิกรอแล้ว) หรือโปรแกรมกำลังปิด (relay จะตอบ `offline` แทน)
 - **เห็นแค่งานที่มาทางอุโมงค์** — `GET /history` ทั้งรายการได้ 403 · `GET /history/{id}` ของ prompt ที่ไม่ได้มาทางอุโมงค์ได้ `{}`
   เหมือน id ที่ ComfyUI ไม่รู้จัก · `GET /queue` เหลือแค่แถวของงานลูกค้า · `GET /view` ได้เฉพาะไฟล์ที่ history ของงานลูกค้าระบุ
   (ไฟล์อื่นได้ 404) · `POST /history {delete}` ลบได้เฉพาะ id ของงานลูกค้า · `POST /interrupt` หยุดได้เฉพาะงานลูกค้าที่กำลัง

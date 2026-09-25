@@ -31,6 +31,18 @@ public sealed record NodeOptions
     public string ComfyUrl { get; init; } = "http://127.0.0.1:8188";
 
     /// <summary>
+    /// How long one request to the local ComfyUI may take before the node
+    /// gives up on it and answers the tunnel itself (1–3600 seconds).
+    /// </summary>
+    /// <remarks>
+    /// Kept under the relay's own wait (180 seconds by default), so a ComfyUI
+    /// that takes a request and never answers is reported by the node, with a
+    /// stage aixman understands, before the relay gives up and answers a bare
+    /// 504 that counts against the machine.
+    /// </remarks>
+    public int ComfyTimeoutSeconds { get; init; } = 150;
+
+    /// <summary>
     /// The folder ComfyUI runs from (the one holding <c>main.py</c>, or its
     /// <c>--base-directory</c>). Only needed when the node cannot work it out
     /// from ComfyUI itself — see <see cref="ComfyRuntime.FoldersAsync"/>.

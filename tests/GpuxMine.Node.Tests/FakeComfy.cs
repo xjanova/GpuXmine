@@ -58,6 +58,15 @@ public sealed class FakeComfy : IAsyncDisposable
     /// <summary>Close the connection instead of answering POST /prompt — after taking it, as a ComfyUI that dies mid-answer does.</summary>
     public bool DropPromptAnswers { get; set; }
 
+    /// <summary>
+    /// "METHOD /path" prefixes that are taken and never answered — a ComfyUI
+    /// wedged or stuck loading a model. Held until the caller hangs up or the
+    /// fake is disposed.
+    /// </summary>
+    public ConcurrentBag<string> Hangs { get; } = new();
+
+    private readonly CancellationTokenSource _released = new();
+
     public string Url { get; }
 
     private FakeComfy(WebApplication app)
@@ -76,7 +85,15 @@ public sealed class FakeComfy : IAsyncDisposable
         FakeComfy? fake = null;
         app.Use(async (context, next) =>
         {
-            fake!.Hits.Enqueue($"{context.Request.Method} {context.Request.Path}{context.Request.QueryString}");
+            string hit = $"{context.Request.Method} {context.Request.Path}{context.Request.QueryString}";
+            fake!.Hits.Enqueue(hit);
+            if (fake.Hangs.Any(h => hit.StartsWith(h, StringComparison.Ordinal)))
+            {
+                using var held = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, fake._released.Token);
+                try { await Task.Delay(Timeout.Infinite, held.Token); }
+                catch (OperationCanceledException) { /* the caller gave up, or the test is over */ }
+                return;
+            }
             await next();
         });
 
@@ -184,8 +201,10 @@ public sealed class FakeComfy : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        await _released.CancelAsync();
         await _app.StopAsync();
         await _app.DisposeAsync();
+        _released.Dispose();
     }
 }
 
